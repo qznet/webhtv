@@ -84,7 +84,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: leanback-v7a-debug
-          path: app/build/outputs/apk/leanback/armeabi_v7a/debug/*.apk
+          path: app/build/outputs/apk/leanbackArmeabi_v7a/debug/*.apk
           if-no-files-found: error
 
       - name: Upload arm64 APK artifact
@@ -92,5 +92,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: leanback-arm64-debug
-          path: app/build/outputs/apk/leanback/arm64_v8a/debug/*.apk
+          path: app/build/outputs/apk/leanbackArm64_v8a/debug/*.apk
           if-no-files-found: error
