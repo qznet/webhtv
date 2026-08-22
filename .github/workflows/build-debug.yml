@@ -1,0 +1,96 @@
+name: Build Leanback TV APK
+
+# 手动触发：Actions 页面点 "Run workflow" 即可出包。
+# 也可在 push 到 fongmi 分支时自动构建。
+on:
+  workflow_dispatch:
+    inputs:
+      build_arm64:
+        description: "同时构建 arm64_v8a 电视版"
+        type: boolean
+        default: true
+      build_v7a:
+        description: "构建 armeabi_v7a 电视版（电视 v7a）"
+        type: boolean
+        default: true
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    name: Build leanback debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages
+        run: |
+          sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;37.0.0" "ndk;27.0.12077973"
+
+      - name: Generate local.properties placeholder
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "ndk.dir=$ANDROID_HOME/ndk/27.0.12077973" >> local.properties
+          echo "storeFile=keystore.jks" >> local.properties
+          echo "keyAlias=android" >> local.properties
+          echo "storePassword=android" >> local.properties
+
+      - name: Verify bundled MPV native assets
+        run: bash scripts/verify_mpv_native_assets.sh --require-elf
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Build leanback armeabi_v7a debug APK
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_v7a }}
+        run: ./gradlew assembleLeanbackArmeabi_v7aDebug --no-daemon --stacktrace
+
+      - name: Build leanback arm64_v8a debug APK
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_arm64 }}
+        run: ./gradlew assembleLeanbackArm64_v8aDebug --no-daemon --stacktrace
+
+      - name: List built APKs
+        run: find app/build/outputs/apk -name '*.apk' -print
+
+      - name: Upload v7a APK artifact
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_v7a }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: leanback-v7a-debug
+          path: app/build/outputs/apk/leanback/armeabi_v7a/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload arm64 APK artifact
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_arm64 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: leanback-arm64-debug
+          path: app/build/outputs/apk/leanback/arm64_v8a/debug/*.apk
+          if-no-files-found: error

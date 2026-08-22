@@ -58,6 +58,7 @@ import com.fongmi.android.tv.ui.custom.CustomRowPresenter;
 import com.fongmi.android.tv.ui.custom.CustomSelector;
 import com.fongmi.android.tv.ui.custom.CustomTitleView;
 import com.fongmi.android.tv.ui.dialog.ExitConfirmDialog;
+import com.fongmi.android.tv.ui.dialog.LinkDialog;
 import com.fongmi.android.tv.ui.dialog.SiteDialog;
 import com.fongmi.android.tv.ui.presenter.FuncPresenter;
 import com.fongmi.android.tv.ui.presenter.HeaderPresenter;
@@ -467,6 +468,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         items.add(Func.create(R.string.home_keep));
         items.add(Func.create(R.string.home_push));
         items.add(Func.create(R.string.home_setting));
+        items.add(Func.create(R.string.home_open));
         mFuncAdapter.setItems(items, new BaseDiffCallback<Func>());
     }
 
@@ -591,6 +593,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         else if (item.getResId() == R.string.home_push) PushActivity.start(this);
         else if (item.getResId() == R.string.home_search) SearchActivity.start(this);
         else if (item.getResId() == R.string.home_setting) SettingActivity.start(this);
+        else if (item.getResId() == R.string.home_open) LinkDialog.show(this);
     }
 
     @Override
