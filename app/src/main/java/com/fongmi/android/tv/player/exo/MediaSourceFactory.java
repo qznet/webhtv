@@ -224,7 +224,8 @@ public class MediaSourceFactory implements MediaSource.Factory {
 
     private DataSource.Factory getDataSourceFactory() {
         if (dataSourceFactory == null) {
-            DataSource.Factory cacheDataSource = getCacheDataSource(new DefaultDataSource.Factory(App.get(), getHttpDataSourceFactory()));
+            DataSource.Factory smbAware = () -> new SmbSchemeDataSource(App.get(), getHttpDataSourceFactory());
+            DataSource.Factory cacheDataSource = getCacheDataSource(smbAware);
             DataSource.Factory trackedDataSource = new PlaybackBytePositionDataSource.Factory(cacheDataSource);
             dataSourceFactory = new PriorityTaskDataSource.Factory(trackedDataSource, PLAYBACK_PRIORITY_MANAGER, C.PRIORITY_PLAYBACK, false);
         }

@@ -4846,11 +4846,17 @@ public class PlayerManager implements ParseCallback {
     }
 
     private PlayerEngine buildEngine(int type, int decode) {
+        if (isSmbPlayback()) type = PlayerSetting.EXO;
         return switch (type) {
             case PlayerSetting.IJK -> new IjkPlayerEngine(decode, listener);
             case PlayerSetting.MPV -> new MpvPlayerEngine(decode, listener, this::onMpvVideoSizeProbed);
             default -> new ExoPlayerEngine(decode, listener);
         };
+    }
+
+    private boolean isSmbPlayback() {
+        String url = spec == null ? null : spec.getUrl();
+        return url != null && url.regionMatches(true, 0, "smb://", 0, 6);
     }
 
     public void browse(PlaySpec spec) {
