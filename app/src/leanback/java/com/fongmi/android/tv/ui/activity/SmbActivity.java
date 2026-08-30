@@ -10,6 +10,7 @@ import androidx.recyclerview.widget.GridLayoutManager;
 import androidx.viewbinding.ViewBinding;
 
 import com.fongmi.android.tv.Product;
+import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.databinding.ActivitySmbBinding;
 import com.fongmi.android.tv.smb.SmbClient;
 import com.fongmi.android.tv.smb.SmbFile;

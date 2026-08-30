@@ -7,7 +7,7 @@ import com.hierynomus.smbj.auth.AuthenticationContext;
 import com.hierynomus.smbj.connection.Connection;
 import com.hierynomus.smbj.session.Session;
 import com.hierynomus.smbj.share.DiskShare;
-import com.hierynomus.smbj.share.File;
+import com.hierynomus.msfscc.fileinformation.FileIdBothDirectoryInformation;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -55,9 +55,9 @@ public class SmbClient {
                 Session session = conn.authenticate(auth);
                 DiskShare ds = (DiskShare) session.connectShare(share);
                 String path = parentPath == null ? "" : parentPath;
-                List<File> raw = ds.list(path);
+                List<FileIdBothDirectoryInformation> raw = ds.list(path);
                 List<SmbFile> files = new ArrayList<>();
-                for (File f : raw) {
+                for (FileIdBothDirectoryInformation f : raw) {
                     String n = f.getFileName();
                     if (n.equals(".") || n.equals("..")) continue;
                     files.add(SmbFile.create(f, path));

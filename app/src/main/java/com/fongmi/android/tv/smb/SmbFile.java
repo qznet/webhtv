@@ -1,7 +1,8 @@
 package com.fongmi.android.tv.smb;
 
 import com.fongmi.android.tv.impl.Diffable;
-import com.hierynomus.smbj.share.File;
+import com.hierynomus.msfscc.FileAttributes;
+import com.hierynomus.msfscc.fileinformation.FileIdBothDirectoryInformation;
 
 /**
  * A single entry inside an SMB share: either a folder or a file.
@@ -22,10 +23,12 @@ public class SmbFile implements Diffable<SmbFile> {
         this.size = size;
     }
 
-    public static SmbFile create(File f, String parentPath) {
+    public static SmbFile create(FileIdBothDirectoryInformation f, String parentPath) {
         String name = f.getFileName();
         String path = parentPath.isEmpty() ? name : parentPath + "/" + name;
-        return new SmbFile(name, path, f.isDirectory(), f.getFileSize());
+        boolean directory = (FileAttributes.FILE_ATTRIBUTE_DIRECTORY.getValue() & f.getFileAttributes()) != 0;
+        long size = f.getEndOfFile();
+        return new SmbFile(name, path, directory, size);
     }
 
     public String getName() {
