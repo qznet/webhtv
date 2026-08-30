@@ -6,10 +6,9 @@ import android.os.Bundle;
 import android.view.View;
 import android.widget.EditText;
 
-import androidx.recyclerview.widget.GridLayoutManager;
+import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.viewbinding.ViewBinding;
 
-import com.fongmi.android.tv.Product;
 import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.api.SiteApi;
 import com.fongmi.android.tv.databinding.ActivitySmbBinding;
@@ -20,7 +19,6 @@ import com.fongmi.android.tv.smb.SmbServer;
 import com.fongmi.android.tv.smb.SmbStore;
 import com.fongmi.android.tv.ui.adapter.SmbAdapter;
 import com.fongmi.android.tv.ui.base.BaseActivity;
-import com.fongmi.android.tv.ui.custom.SpaceItemDecoration;
 import com.fongmi.android.tv.ui.dialog.ChoiceDialog;
 import com.fongmi.android.tv.ui.dialog.SmbServerDialog;
 import com.fongmi.android.tv.utils.Notify;
@@ -61,8 +59,8 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
         mBinding.recycler.setHasFixedSize(true);
         mBinding.recycler.setItemAnimator(null);
         mBinding.recycler.setAdapter(mAdapter = new SmbAdapter(this));
-        mBinding.recycler.setLayoutManager(new GridLayoutManager(this, Product.getColumn()));
-        mBinding.recycler.addItemDecoration(new SpaceItemDecoration(Product.getColumn(), 16));
+        // Detail-style list: one file per row, easier to read long filenames on a TV.
+        mBinding.recycler.setLayoutManager(new LinearLayoutManager(this));
         mBinding.server.setOnClickListener(v -> openServerChooser());
         mBinding.share.setOnClickListener(v -> promptShare());
         mBinding.add.setOnClickListener(v -> addServer());
@@ -70,16 +68,9 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
         mBinding.playAll.setOnClickListener(v -> playAll());
     }
 
-    /**
-     * Play every video file in the current folder back-to-back.
-     *
-     * <p>The app already auto-advances to the next episode ({@code checkEnded -> checkNext}), so we
-     * reuse that by handing the player a TVBox-style multi-episode playlist
-     * ({@code name$url#name$url#...}) built from the folder's video files.
-     */
+    /** Play every video file in the current folder back-to-back. */
     private void playAll() {
         if (servers.isEmpty()) return;
-        SmbServer s = servers.get(selectedIndex);
         List<SmbFile> videos = new ArrayList<>();
         for (SmbFile item : mAdapter.getItems()) {
             if (videos.size() >= MAX_PLAYLIST) break;
@@ -89,6 +80,57 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
             Notify.show(R.string.smb_no_video);
             return;
         }
+        startPlaylist(videos);
+    }
+
+    /**
+     * Play the clicked file and every video file that follows it in the current folder.
+     *
+     * <p>Non-video files (subtitles, nfo, ...) still open on their own so clicking one is not a
+     * dead end.
+     */
+    private void playFrom(SmbFile start) {
+        if (servers.isEmpty()) return;
+        if (!isVideo(start.getName())) {
+            playSingle(start);
+            return;
+        }
+        List<SmbFile> items = mAdapter.getItems();
+        int from = 0;
+        for (int i = 0; i < items.size(); i++) {
+            if (items.get(i).getPath().equals(start.getPath())) {
+                from = i;
+                break;
+            }
+        }
+        List<SmbFile> videos = new ArrayList<>();
+        for (int i = from; i < items.size() && videos.size() < MAX_PLAYLIST; i++) {
+            SmbFile item = items.get(i);
+            if (!item.isDirectory() && isVideo(item.getName())) videos.add(item);
+        }
+        if (videos.isEmpty()) playSingle(start);
+        else startPlaylist(videos);
+    }
+
+    private void playSingle(SmbFile item) {
+        SmbServer s = servers.get(selectedIndex);
+        String url = s.getFileUrl(currentShare, item.getPath());
+        // Route through the local loopback HTTP proxy so both the mpv and exo kernels
+        // read SMB over plain HTTP (mpv cannot read smb:// directly on Android TV).
+        try {
+            url = SmbHttpProxy.get().proxyUrl(url);
+        } catch (Throwable ignored) {
+            // Fall back to the raw smb:// URL (exo's smbj data source) if the proxy is down.
+        }
+        VideoActivity.start(this, url);
+    }
+
+    /**
+     * The app already auto-advances ({@code checkEnded -> checkNext}), so a folder playlist is just
+     * a TVBox-style multi-episode string: {@code name$url#name$url#...}.
+     */
+    private void startPlaylist(List<SmbFile> videos) {
+        SmbServer s = servers.get(selectedIndex);
         StringBuilder sb = new StringBuilder();
         for (SmbFile v : videos) {
             String url = s.getFileUrl(currentShare, v.getPath());
@@ -245,16 +287,8 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
             listFiles();
             return;
         }
-        SmbServer s = servers.get(selectedIndex);
-        String url = s.getFileUrl(currentShare, item.getPath());
-        // Route through the local loopback HTTP proxy so both the mpv and exo kernels
-        // read SMB over plain HTTP (mpv cannot read smb:// directly on Android TV).
-        try {
-            url = SmbHttpProxy.get().proxyUrl(url);
-        } catch (Throwable ignored) {
-            // Fall back to the raw smb:// URL (exo's smbj data source) if the proxy is down.
-        }
-        VideoActivity.start(this, url);
+        // Play the clicked file and everything after it in the current folder.
+        playFrom(item);
     }
 
     @Override

@@ -59,15 +59,14 @@ public class SmbAdapter extends BaseDiffAdapter<SmbFile, SmbAdapter.ViewHolder> 
             this.binding = binding;
         }
 
+        /**
+         * Full-width list rows must not be scaled on focus (they would overflow and get clipped),
+         * so highlight the whole row instead.
+         */
         private void setFocus() {
             itemView.setOnFocusChangeListener((v, hasFocus) -> {
-                if (hasFocus) {
-                    v.animate().scaleX(1.08f).scaleY(1.08f).setDuration(150).start();
-                    v.setSelected(true);
-                } else {
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(150).start();
-                    v.setSelected(false);
-                }
+                v.setBackgroundColor(hasFocus ? 0x33FFFFFF : 0x00000000);
+                v.setSelected(hasFocus);
             });
         }
     }
