@@ -4,6 +4,7 @@ import com.hierynomus.msdtyp.AccessMask;
 import com.hierynomus.msfscc.FileAttributes;
 import com.hierynomus.msfscc.fileinformation.FileStandardInformation;
 import com.hierynomus.mssmb2.SMB2CreateDisposition;
+import com.hierynomus.mssmb2.SMB2CreateOptions;
 import com.hierynomus.mssmb2.SMB2ShareAccess;
 import com.hierynomus.smbj.SMBClient;
 import com.hierynomus.smbj.SmbConfig;
@@ -304,6 +305,14 @@ public class SmbHttpProxy extends NanoHTTPD {
         }
 
         private void safeClose(java.io.Closeable c) {
+            if (c == null) return;
+            try {
+                c.close();
+            } catch (Throwable ignored) {
+            }
+        }
+
+        private void safeClose(DiskShare c) {
             if (c == null) return;
             try {
                 c.close();
