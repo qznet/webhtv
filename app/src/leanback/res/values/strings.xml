@@ -26,6 +26,8 @@
     <string name="smb_invalid">Name and host are required</string>
     <string name="smb_no_server">No SMB server, please add one</string>
     <string name="smb_folder">Folder</string>
+    <string name="smb_play_all">Play folder</string>
+    <string name="smb_no_video">No video files in this folder</string>
     <string name="control_speed">Speed</string>
     <string name="control_scale">Scale</string>
     <string name="control_episode_column">Long title columns</string>

@@ -26,6 +26,8 @@
     <string name="smb_invalid">名稱與主機不可為空</string>
     <string name="smb_no_server">尚未新增 SMB 伺服器，請先新增</string>
     <string name="smb_folder">資料夾</string>
+    <string name="smb_play_all">播放本目錄</string>
+    <string name="smb_no_video">此目錄沒有可播放的影片檔案</string>
     <string name="control_speed">倍速</string>
     <string name="control_scale">縮放</string>
     <string name="control_episode_column">長標題列數</string>

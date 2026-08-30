@@ -11,6 +11,7 @@ import androidx.viewbinding.ViewBinding;
 
 import com.fongmi.android.tv.Product;
 import com.fongmi.android.tv.R;
+import com.fongmi.android.tv.api.SiteApi;
 import com.fongmi.android.tv.databinding.ActivitySmbBinding;
 import com.fongmi.android.tv.smb.SmbClient;
 import com.fongmi.android.tv.smb.SmbFile;
@@ -38,6 +39,9 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
     private String currentShare = "";
     private String currentPath = "";
 
+    /** Keeps the playlist Intent well under the binder transaction limit. */
+    private static final int MAX_PLAYLIST = 500;
+
     public static void start(Activity activity) {
         activity.startActivity(new Intent(activity, SmbActivity.class));
     }
@@ -63,6 +67,76 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
         mBinding.share.setOnClickListener(v -> promptShare());
         mBinding.add.setOnClickListener(v -> addServer());
         mBinding.refresh.setOnClickListener(v -> listFiles());
+        mBinding.playAll.setOnClickListener(v -> playAll());
+    }
+
+    /**
+     * Play every video file in the current folder back-to-back.
+     *
+     * <p>The app already auto-advances to the next episode ({@code checkEnded -> checkNext}), so we
+     * reuse that by handing the player a TVBox-style multi-episode playlist
+     * ({@code name$url#name$url#...}) built from the folder's video files.
+     */
+    private void playAll() {
+        if (servers.isEmpty()) return;
+        SmbServer s = servers.get(selectedIndex);
+        List<SmbFile> videos = new ArrayList<>();
+        for (SmbFile item : mAdapter.getItems()) {
+            if (videos.size() >= MAX_PLAYLIST) break;
+            if (!item.isDirectory() && isVideo(item.getName())) videos.add(item);
+        }
+        if (videos.isEmpty()) {
+            Notify.show(R.string.smb_no_video);
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (SmbFile v : videos) {
+            String url = s.getFileUrl(currentShare, v.getPath());
+            try {
+                url = SmbHttpProxy.get().proxyUrl(url);
+            } catch (Throwable ignored) {
+                // Fall back to the raw smb:// URL (exo's smbj data source) if the proxy is down.
+            }
+            if (sb.length() > 0) sb.append('#');
+            sb.append(sanitize(v.getName())).append('$').append(url);
+        }
+        VideoActivity.start(this, SiteApi.PUSH, sb.toString(), currentPathText());
+    }
+
+    private static boolean isVideo(String name) {
+        if (name == null) return false;
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) return false;
+        String ext = name.substring(dot + 1).toLowerCase();
+        switch (ext) {
+            case "mkv":
+            case "mp4":
+            case "m4v":
+            case "mov":
+            case "avi":
+            case "wmv":
+            case "flv":
+            case "webm":
+            case "ts":
+            case "m2ts":
+            case "vob":
+            case "mpg":
+            case "mpeg":
+            case "3gp":
+            case "asf":
+            case "rmvb":
+            case "rm":
+            case "iso":
+            case "dat":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** '#' and '$' are the playlist separators, so they must not appear inside a title. */
+    private static String sanitize(String name) {
+        return name.replace('#', '_').replace('$', '_');
     }
 
     private void loadServers() {

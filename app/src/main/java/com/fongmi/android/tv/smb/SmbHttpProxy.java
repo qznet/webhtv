@@ -1,5 +1,6 @@
 package com.fongmi.android.tv.smb;
 
+import com.fongmi.android.tv.setting.PlayerSetting;
 import com.hierynomus.msdtyp.AccessMask;
 import com.hierynomus.msfscc.FileAttributes;
 import com.hierynomus.msfscc.fileinformation.FileStandardInformation;
@@ -16,6 +17,8 @@ import com.hierynomus.smbj.share.File;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -47,7 +50,9 @@ public class SmbHttpProxy extends NanoHTTPD {
 
     private static final SmbHttpProxy INSTANCE = new SmbHttpProxy();
     private static final long IDLE_TIMEOUT_MS = 90_000;
-    private static final int READ_CHUNK = 256 * 1024;
+    private static final int READ_BLOCK = 1024 * 1024;   // bytes per single SMB READ (1 MiB)
+    private static final int MAX_WINDOW = 8 * 1024 * 1024;
+    private static final int MAX_SESSIONS = 1000;
 
     private final ConcurrentHashMap<String, SmbSession> sessions = new ConcurrentHashMap<>();
     private final AtomicLong nextId = new AtomicLong();
@@ -100,14 +105,26 @@ public class SmbHttpProxy extends NanoHTTPD {
         }
     }
 
+    /**
+     * Frees the SMB connection of idle sessions but <b>keeps the session entry</b>, so a folder
+     * playlist can still request episode #40 long after it was minted (it simply reopens lazily).
+     * Entries are only evicted once the cache grows past {@link #MAX_SESSIONS}.
+     */
     private void reap() {
+        if (sessions.isEmpty()) return;
         long now = System.currentTimeMillis();
-        for (Map.Entry<String, SmbSession> e : sessions.entrySet()) {
-            if (now - e.getValue().lastAccess() > IDLE_TIMEOUT_MS) {
-                sessions.remove(e.getKey());
-                e.getValue().close();
-            }
+        for (SmbSession s : sessions.values()) {
+            if (now - s.lastAccess() > IDLE_TIMEOUT_MS) s.close();
         }
+        int excess = sessions.size() - MAX_SESSIONS;
+        if (excess <= 0) return;
+        new ArrayList<>(sessions.entrySet()).stream()
+                .sorted(Comparator.comparingLong(entry -> entry.getValue().lastAccess()))
+                .limit(excess)
+                .forEach(entry -> {
+                    sessions.remove(entry.getKey());
+                    entry.getValue().close();
+                });
     }
 
     private String baseUrl() {
@@ -169,16 +186,41 @@ public class SmbHttpProxy extends NanoHTTPD {
         }
     }
 
-    /** Streams {@code [start, start+length)} from an opened SMB file. */
+    /**
+     * Streams {@code [start, start+length)} from an opened SMB file through a read-ahead window.
+     *
+     * <p>The HTTP layer pulls this stream in small (a few KB) chunks; issuing a separate SMB READ
+     * per small chunk means one network round-trip per few KB, which collapses to ~5 MB/s on a
+     * high-latency NAS. Instead we pull a large block (1 MiB) from SMB into a window and serve the
+     * small HTTP reads out of memory — the same read-ahead idea external SMB file managers use.
+     */
     private static final class SmbRangeStream extends InputStream {
         private final SmbSession session;
         private final long end;
+        private final byte[] window;
         private long pos;
+        private long winStart;
+        private int winLen;
 
         SmbRangeStream(SmbSession session, long start, long length) {
             this.session = session;
             this.pos = start;
             this.end = start + length;
+            long desired = Math.min(PlayerSetting.getSmbWindowBytes(), MAX_WINDOW);
+            long fit = Math.min(desired, Math.max(READ_BLOCK, length));
+            this.window = new byte[(int) Math.max(READ_BLOCK, fit)];
+        }
+
+        private void fill() throws IOException {
+            winStart = pos;
+            winLen = 0;
+            long want = Math.min(window.length, end - pos);
+            while (winLen < want) {
+                int need = (int) Math.min(READ_BLOCK, want - winLen);
+                int n = session.readRaw(winStart + winLen, window, winLen, need);
+                if (n <= 0) break;
+                winLen += n;
+            }
         }
 
         @Override
@@ -191,9 +233,11 @@ public class SmbHttpProxy extends NanoHTTPD {
         @Override
         public int read(byte[] b, int off, int len) throws IOException {
             if (pos >= end) return -1;
-            int toRead = (int) Math.min(len, end - pos);
-            int n = session.readAt(pos, b, off, toRead);
-            if (n <= 0) return -1;
+            if (pos < winStart || pos >= winStart + winLen) fill();
+            if (winLen == 0) return -1;
+            int inWin = (int) (pos - winStart);
+            int n = (int) Math.min(len, Math.min(winLen - inWin, end - pos));
+            System.arraycopy(window, inWin, b, off, n);
             pos += n;
             return n;
         }
@@ -273,9 +317,10 @@ public class SmbHttpProxy extends NanoHTTPD {
             return size;
         }
 
-        synchronized int readAt(long offset, byte[] buf, int off, int len) throws IOException {
+        /** Raw SMB read at an arbitrary file offset; counts real network bytes for the OSD. */
+        synchronized int readRaw(long offset, byte[] buf, int off, int len) throws IOException {
             lastAccess = System.currentTimeMillis();
-            int n = file.read(buf, offset, off, Math.min(len, READ_CHUNK));
+            int n = file.read(buf, offset, off, len);
             if (n > 0) bytesServed.addAndGet(n);
             return n;
         }
@@ -291,7 +336,6 @@ public class SmbHttpProxy extends NanoHTTPD {
         }
 
         synchronized void close() {
-            lastAccess = System.currentTimeMillis();
             safeClose(file);
             safeClose(ds);
             safeClose(session);
