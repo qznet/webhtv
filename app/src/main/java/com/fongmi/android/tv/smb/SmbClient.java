@@ -64,7 +64,7 @@ public class SmbClient {
                 }
                 files.sort((a, b) -> {
                     if (a.isDirectory() != b.isDirectory()) return a.isDirectory() ? -1 : 1;
-                    return a.getName().compareToIgnoreCase(b.getName());
+                    return naturalCompare(a.getName(), b.getName());
                 });
                 final List<SmbFile> result = files;
                 App.post(() -> callback.onResult(result));
@@ -76,6 +76,40 @@ public class SmbClient {
                 closeQuietly(client);
             }
         });
+    }
+
+    /**
+     * Natural (numeric-aware) ordering, so {@code S01E2} sorts before {@code S01E10} instead of
+     * after it as plain lexicographic ordering would. Folders keep priority in {@link #list}.
+     */
+    static int naturalCompare(String a, String b) {
+        if (a == null) return b == null ? 0 : -1;
+        if (b == null) return 1;
+        int i = 0;
+        int j = 0;
+        while (i < a.length() && j < b.length()) {
+            char ca = a.charAt(i);
+            char cb = b.charAt(j);
+            if (Character.isDigit(ca) && Character.isDigit(cb)) {
+                long na = 0;
+                long nb = 0;
+                while (i < a.length() && Character.isDigit(a.charAt(i))) {
+                    if (na < Long.MAX_VALUE / 10) na = na * 10 + (a.charAt(i) - '0');
+                    i++;
+                }
+                while (j < b.length() && Character.isDigit(b.charAt(j))) {
+                    if (nb < Long.MAX_VALUE / 10) nb = nb * 10 + (b.charAt(j) - '0');
+                    j++;
+                }
+                if (na != nb) return na < nb ? -1 : 1;
+            } else {
+                int cmp = Character.toLowerCase(ca) - Character.toLowerCase(cb);
+                if (cmp != 0) return cmp;
+                i++;
+                j++;
+            }
+        }
+        return Integer.compare(a.length() - i, b.length() - j);
     }
 
     private void closeQuietly(Connection c) {

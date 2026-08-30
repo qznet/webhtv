@@ -12,14 +12,23 @@ import com.fongmi.android.tv.databinding.AdapterSmbBinding;
 import com.fongmi.android.tv.smb.SmbFile;
 import com.fongmi.android.tv.utils.ResUtil;
 
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class SmbAdapter extends BaseDiffAdapter<SmbFile, SmbAdapter.ViewHolder> {
 
     private final OnClickListener listener;
+    private Set<String> watched = new HashSet<>();
 
     public SmbAdapter(OnClickListener listener) {
         this.listener = listener;
+    }
+
+    /** Paths that already have playback history; they are rendered dimmed. */
+    public void setWatched(Set<String> paths) {
+        this.watched = paths == null ? Collections.emptySet() : paths;
     }
 
     public interface OnClickListener {
@@ -38,6 +47,9 @@ public class SmbAdapter extends BaseDiffAdapter<SmbFile, SmbAdapter.ViewHolder> 
         holder.binding.icon.setImageResource(item.isDirectory() ? R.drawable.ic_smb_folder : R.drawable.ic_smb_file);
         holder.binding.name.setText(item.getName());
         holder.binding.info.setText(item.isDirectory() ? ResUtil.getString(R.string.smb_folder) : formatSize(item.getSize()));
+        boolean seen = watched.contains(item.getPath());
+        holder.binding.name.setTextColor(seen ? 0xFF9E9E9E : 0xFFFFFFFF);
+        holder.binding.icon.setAlpha(seen ? 0.5f : 1f);
         holder.itemView.setOnClickListener(v -> listener.onItemClick(item));
         holder.setFocus();
     }

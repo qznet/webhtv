@@ -9,9 +9,13 @@ import android.widget.EditText;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.viewbinding.ViewBinding;
 
+import com.fongmi.android.tv.App;
 import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.api.SiteApi;
+import com.fongmi.android.tv.api.config.VodConfig;
+import com.fongmi.android.tv.bean.History;
 import com.fongmi.android.tv.databinding.ActivitySmbBinding;
+import com.fongmi.android.tv.db.AppDatabase;
 import com.fongmi.android.tv.smb.SmbClient;
 import com.fongmi.android.tv.smb.SmbFile;
 import com.fongmi.android.tv.smb.SmbHttpProxy;
@@ -23,10 +27,13 @@ import com.fongmi.android.tv.ui.dialog.ChoiceDialog;
 import com.fongmi.android.tv.ui.dialog.SmbServerDialog;
 import com.fongmi.android.tv.utils.Notify;
 import com.fongmi.android.tv.utils.ResUtil;
+import com.fongmi.android.tv.utils.Task;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListener {
 
@@ -68,7 +75,11 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
         mBinding.playAll.setOnClickListener(v -> playAll());
     }
 
-    /** Play every video file in the current folder back-to-back. */
+    /**
+     * Play the folder back-to-back, continuing from where the user left off: the most recently
+     * played file goes first (the player restores its saved position) and everything after it
+     * follows.
+     */
     private void playAll() {
         if (servers.isEmpty()) return;
         List<SmbFile> videos = new ArrayList<>();
@@ -80,7 +91,12 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
             Notify.show(R.string.smb_no_video);
             return;
         }
-        startPlaylist(videos);
+        final List<SmbFile> all = videos;
+        Task.execute(() -> {
+            int resume = lastWatchedIndex(all);
+            List<SmbFile> playlist = resume > 0 ? new ArrayList<>(all.subList(resume, all.size())) : all;
+            App.post(() -> startPlaylist(playlist));
+        });
     }
 
     /**
@@ -266,6 +282,7 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
             public void onResult(List<SmbFile> files) {
                 mAdapter.setItems(files, () -> mBinding.progressLayout.showContent(true, files.size()));
                 mBinding.path.setText(currentPathText());
+                refreshWatched(files);
             }
 
             @Override
@@ -278,6 +295,53 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
 
     private String currentPathText() {
         return (currentShare.isEmpty() ? "/" : currentShare) + (currentPath.isEmpty() ? "" : "/" + currentPath);
+    }
+
+    /** History rows are keyed by {@code siteKey@@@id@@@cid}; for pushed urls the id is the url. */
+    private static String historyKey(String url) {
+        return SiteApi.PUSH + AppDatabase.SYMBOL + url + AppDatabase.SYMBOL + VodConfig.getCid();
+    }
+
+    /** Look up the playback history of one file (null when it has never been played). */
+    private History historyOf(SmbFile item) {
+        if (servers.isEmpty()) return null;
+        try {
+            String url = SmbHttpProxy.get().proxyUrl(servers.get(selectedIndex).getFileUrl(currentShare, item.getPath()));
+            return History.find(historyKey(url));
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
+    /** Marks every already-played file so the list can dim it. Runs off the main thread (Room). */
+    private void refreshWatched(List<SmbFile> files) {
+        Task.execute(() -> {
+            Set<String> seen = new HashSet<>();
+            for (SmbFile item : files) {
+                if (item.isDirectory() || !isVideo(item.getName())) continue;
+                if (historyOf(item) != null) seen.add(item.getPath());
+            }
+            App.post(() -> {
+                mAdapter.setWatched(seen);
+                mAdapter.notifyDataSetChanged();
+            });
+        });
+    }
+
+    /**
+     * Index to continue from: the most recently played file. If that one was already finished,
+     * continue with the next file instead of replaying it.
+     */
+    private int lastWatchedIndex(List<SmbFile> videos) {
+        int index = -1;
+        long newest = Long.MIN_VALUE;
+        for (int i = 0; i < videos.size(); i++) {
+            History history = historyOf(videos.get(i));
+            if (history == null || history.getUpdateTime() <= newest) continue;
+            newest = history.getUpdateTime();
+            index = history.isNearEnding() && i + 1 < videos.size() ? i + 1 : i;
+        }
+        return index;
     }
 
     @Override

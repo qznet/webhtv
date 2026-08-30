@@ -1,5 +1,9 @@
 package com.fongmi.android.tv.smb;
 
+import android.content.Context;
+import android.content.SharedPreferences;
+
+import com.fongmi.android.tv.App;
 import com.fongmi.android.tv.setting.PlayerSetting;
 import com.hierynomus.msdtyp.AccessMask;
 import com.hierynomus.msfscc.FileAttributes;
@@ -17,6 +21,9 @@ import com.hierynomus.smbj.share.File;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.ServerSocket;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
@@ -48,32 +55,83 @@ import fi.iki.elonen.NanoHTTPD.Response.Status;
  */
 public class SmbHttpProxy extends NanoHTTPD {
 
-    private static final SmbHttpProxy INSTANCE = new SmbHttpProxy();
+    private static final String PREFS = "smb_proxy";
+    private static final String KEY_PORT = "port";
+    private static final int PREFERRED_PORT = 34567;
     private static final long IDLE_TIMEOUT_MS = 90_000;
     private static final int READ_BLOCK = 1024 * 1024;   // bytes per single SMB READ (1 MiB)
     private static final int MAX_WINDOW = 8 * 1024 * 1024;
-    private static final int MAX_SESSIONS = 1000;
+    private static final int MAX_SESSIONS = 5000;
+    private static final char[] HEX = "0123456789abcdef".toCharArray();
+
+    private static volatile SmbHttpProxy instance;
 
     private final ConcurrentHashMap<String, SmbSession> sessions = new ConcurrentHashMap<>();
-    private final AtomicLong nextId = new AtomicLong();
     private final Object startLock = new Object();
     private volatile boolean started;
     private ScheduledExecutorService reaper;
 
-    public static SmbHttpProxy get() {
-        return INSTANCE;
+    public static synchronized SmbHttpProxy get() {
+        if (instance == null) instance = new SmbHttpProxy(resolvePort());
+        return instance;
     }
 
-    private SmbHttpProxy() {
-        super("127.0.0.1", 0);
+    private SmbHttpProxy(int port) {
+        super("127.0.0.1", port);
     }
 
-    /** Mint a loopback HTTP URL that streams the given {@code smb://} file. */
+    /**
+     * Return the loopback HTTP URL that streams the given {@code smb://} file.
+     *
+     * <p>The URL is <b>stable across app restarts</b>: a persisted port plus an id derived from the
+     * SMB url itself. Playback history is keyed by url, so a changing url would silently break
+     * resume-from-last-position.
+     */
     public synchronized String proxyUrl(String smbUrl) throws IOException {
         ensureStarted();
-        String id = String.valueOf(nextId.incrementAndGet());
-        sessions.put(id, new SmbSession(id, smbUrl));
+        String id = stableId(smbUrl);
+        sessions.computeIfAbsent(id, key -> new SmbSession(key, smbUrl));
         return baseUrl() + "/smb/" + id;
+    }
+
+    private static String stableId(String smbUrl) {
+        try {
+            byte[] digest = MessageDigest.getInstance("MD5").digest(smbUrl.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(HEX[(b >> 4) & 0xF]).append(HEX[b & 0xF]);
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(smbUrl.hashCode());
+        }
+    }
+
+    /** Reuse the previously bound port so URLs stay identical between launches. */
+    private static int resolvePort() {
+        int saved = prefs().getInt(KEY_PORT, 0);
+        if (saved > 0 && isFree(saved)) return saved;
+        if (isFree(PREFERRED_PORT)) {
+            savePort(PREFERRED_PORT);
+            return PREFERRED_PORT;
+        }
+        return 0;
+    }
+
+    private static boolean isFree(int port) {
+        try (ServerSocket socket = new ServerSocket(port)) {
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static void savePort(int port) {
+        prefs().edit().putInt(KEY_PORT, port).apply();
+    }
+
+    private static SharedPreferences prefs() {
+        return App.get().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
     /** Sample the live read throughput (bytes/sec) for a proxied {@code http://127.0.0.1/.../smb/<id>} URL. */
@@ -95,6 +153,7 @@ public class SmbHttpProxy extends NanoHTTPD {
         synchronized (startLock) {
             if (started) return;
             start(NanoHTTPD.SOCKET_READ_TIMEOUT, true);
+            savePort(getListeningPort());
             reaper = Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "smb-proxy-reaper");
                 t.setDaemon(true);
