@@ -123,6 +123,7 @@ public class SmbServer {
     public String getFileUrl(String share, String path) {
         StringBuilder sb = new StringBuilder("smb://");
         if (!isAnonymous()) {
+            if (!getDomain().isEmpty()) sb.append(getDomain()).append(";");
             sb.append(getUser());
             if (!getPass().isEmpty()) sb.append(":").append(getPass());
             sb.append("@");

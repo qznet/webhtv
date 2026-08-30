@@ -7,7 +7,6 @@ import androidx.annotation.Nullable;
 import androidx.media3.datasource.DataSource;
 import androidx.media3.datasource.DataSpec;
 import androidx.media3.datasource.DefaultDataSource;
-import androidx.media3.datasource.SmbDataSource;
 import androidx.media3.datasource.TransferListener;
 
 import java.io.IOException;
@@ -16,16 +15,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Routes {@code smb://} URIs to Media3's {@link SmbDataSource} (backed by the smbj pure-Java
- * SMB client) and delegates every other scheme to the standard {@link DefaultDataSource}.
+ * Routes {@code smb://} URIs to a smbj-backed {@link SmbBufferedDataSource} (with read-ahead
+ * buffering and explicit timeouts) and delegates every other scheme to the standard
+ * {@link DefaultDataSource}.
  *
  * <p>This lets the ExoPlayer engine play files straight off a Windows/Samba share, e.g.
  * {@code smb://user:password@host/share/path/to/movie.mkv}. Credentials are taken from the
- * user-info part of the URI; anonymous access falls back to a guest session.
+ * user-info part of the URI as {@code [domain;]user:password}; anonymous access falls back to a
+ * guest session.
  */
 public final class SmbSchemeDataSource implements DataSource {
 
-    private final SmbDataSource smb = new SmbDataSource();
+    private final SmbBufferedDataSource smb = new SmbBufferedDataSource();
     private final DataSource base;
     @Nullable
     private DataSource current;
