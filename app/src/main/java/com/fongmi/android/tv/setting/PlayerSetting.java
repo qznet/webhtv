@@ -580,6 +580,29 @@ public class PlayerSetting {
         Prefers.put("player_osd_speed_buffer", value);
     }
 
+    public static final int SMB_WINDOW_DEFAULT_OPTION = 1; // 2 MB
+
+    private static final int[] SMB_WINDOW_SIZES = {
+            1 * 1024 * 1024,
+            2 * 1024 * 1024,
+            4 * 1024 * 1024,
+            8 * 1024 * 1024,
+    };
+
+    public static int getSmbWindowOption() {
+        int opt = Prefers.getInt("player_smb_window", SMB_WINDOW_DEFAULT_OPTION);
+        return Math.max(0, Math.min(opt, SMB_WINDOW_SIZES.length - 1));
+    }
+
+    public static void putSmbWindowOption(int option) {
+        Prefers.put("player_smb_window", Math.max(0, Math.min(option, SMB_WINDOW_SIZES.length - 1)));
+    }
+
+    /** SMB read-ahead window size in bytes; consumed by {@code SmbBufferedDataSource} on open. */
+    public static int getSmbWindowBytes() {
+        return SMB_WINDOW_SIZES[getSmbWindowOption()];
+    }
+
     public static boolean isOsdEnabled() {
         return isOsdTitle() || isOsdResolution() || isOsdTime() || isOsdProgress() || isOsdTraffic() || isOsdMini() || isOsdDiagnostics() || isOsdSpeedBuffer();
     }

@@ -1251,6 +1251,15 @@
         <item>Speed / Buffer</item>
     </string-array>
 
+    <string name="player_smb_window">SMB read-ahead window</string>
+
+    <string-array name="select_smb_window">
+        <item>1 MB</item>
+        <item>2 MB</item>
+        <item>4 MB</item>
+        <item>8 MB</item>
+    </string-array>
+
     <string-array name="select_track">
         <item>Select audio track</item>
         <item>Select video track</item>

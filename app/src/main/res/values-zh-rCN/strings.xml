@@ -1243,6 +1243,15 @@
         <item>速度/缓冲</item>
     </string-array>
 
+    <string name="player_smb_window">SMB 预读窗口</string>
+
+    <string-array name="select_smb_window">
+        <item>1 MB</item>
+        <item>2 MB</item>
+        <item>4 MB</item>
+        <item>8 MB</item>
+    </string-array>
+
     <string-array name="select_track">
         <item>选择音轨</item>
         <item>选择视轨</item>

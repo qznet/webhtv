@@ -47,6 +47,7 @@ public class SettingPlayerActivity extends BaseActivity implements UaListener, B
     private String[] render;
     private String[] scale;
     private String[] osd;
+    private String[] smbWindow;
 
     public static void start(Activity activity) {
         activity.startActivity(new Intent(activity, SettingPlayerActivity.class));
@@ -86,6 +87,7 @@ public class SettingPlayerActivity extends BaseActivity implements UaListener, B
         mBinding.audioPassThroughText.setText(getSwitch(PlayerSetting.isAudioPassThrough()));
         mBinding.videoDecodeText.setText(getSwitch(PlayerSetting.isVideoPrefer()));
         mBinding.osdText.setText(getOsdText(osd = ResUtil.getStringArray(R.array.select_player_osd)));
+        mBinding.smbWindowText.setText((smbWindow = ResUtil.getStringArray(R.array.select_smb_window))[PlayerSetting.getSmbWindowOption()]);
         mBinding.kernelText.setText((kernel = ResUtil.getStringArray(R.array.select_player_kernel))[PlayerSetting.getPlayer()]);
         mBinding.scaleText.setText((scale = ResUtil.getStringArray(R.array.select_scale))[PlayerSetting.getScale()]);
         mBinding.lutText.setText(LutSetting.getSummary());
@@ -104,6 +106,7 @@ public class SettingPlayerActivity extends BaseActivity implements UaListener, B
         mBinding.lut.setOnClickListener(this::onLut);
         mBinding.mpvConfig.setOnClickListener(view -> MpvConfigDialog.show(this, () -> mBinding.mpvConfigText.setText(MpvConfigStore.summary())));
         mBinding.osd.setOnClickListener(this::onOsd);
+        mBinding.smbWindow.setOnClickListener(this::setSmbWindow);
         mBinding.playerButtons.setOnClickListener(view -> PlayerButtonConfigDialog.show(this, this::setPlayerButtonsText));
         mBinding.speed.setOnClickListener(this::onSpeed);
         mBinding.buffer.setOnClickListener(this::onBuffer);
@@ -181,6 +184,12 @@ public class SettingPlayerActivity extends BaseActivity implements UaListener, B
             setOsdChecked(checked);
             mBinding.osdText.setText(getOsdText(osd));
         });
+    }
+
+    private void setSmbWindow(View view) {
+        int index = (PlayerSetting.getSmbWindowOption() + 1) % smbWindow.length;
+        PlayerSetting.putSmbWindowOption(index);
+        mBinding.smbWindowText.setText(smbWindow[index]);
     }
 
     private void setPlayerButtonsText() {

@@ -9,6 +9,8 @@ import androidx.media3.datasource.BaseDataSource;
 import androidx.media3.datasource.DataSourceException;
 import androidx.media3.datasource.DataSpec;
 
+import com.fongmi.android.tv.setting.PlayerSetting;
+
 import com.hierynomus.msdtyp.AccessMask;
 import com.hierynomus.mssmb2.SMB2CreateDisposition;
 import com.hierynomus.mssmb2.SMB2ShareAccess;
@@ -30,7 +32,8 @@ import java.util.concurrent.TimeUnit;
  * READ per player {@code read()} call and uses the default {@link SMBClient} timeout config. On
  * high-latency NAS that collapses throughput (the player reports a very low transfer speed and
  * eventually times out). This implementation instead pulls large sequential chunks (up to
- * {@link #WINDOW_SIZE}) into a local window so the player's many small reads are served from
+ * a configurable read-ahead window (see {@code PlayerSetting.getSmbWindowBytes()}) into a local
+ * buffer so the player's many small reads are served from
  * memory, and connects with explicit, generous timeouts so a slow link does not trip a spurious
  * "connection timeout".
  *
@@ -40,7 +43,6 @@ import java.util.concurrent.TimeUnit;
  */
 public final class SmbBufferedDataSource extends BaseDataSource {
 
-    private static final int WINDOW_SIZE = 2 * 1024 * 1024;   // 2 MB read-ahead window
     private static final int READ_CHUNK = 256 * 1024;        // max bytes per single SMB READ
 
     // Live debug statistics, published to a singleton so the OSD can sample throughput
@@ -50,7 +52,8 @@ public final class SmbBufferedDataSource extends BaseDataSource {
     private static volatile long sLastSampleTs;
     private static volatile float sWindowFill;               // 0..1, read-ahead window occupancy
 
-    private final byte[] window = new byte[WINDOW_SIZE];
+    private byte[] window;
+    private long windowSize;    // read-ahead window size in bytes, resolved from settings on open()
     private long windowStart;   // file offset of window[0]
     private long windowEnd;     // file offset just past the last valid byte in the window
     private long fileLength;
@@ -92,6 +95,8 @@ public final class SmbBufferedDataSource extends BaseDataSource {
     public long open(DataSpec dataSpec) throws IOException {
         uri = dataSpec.uri;
         resetStats();
+        windowSize = PlayerSetting.getSmbWindowBytes();
+        window = new byte[(int) windowSize];
         transferInitializing(dataSpec);
         String host = uri.getHost();
         if (host == null) {
@@ -173,7 +178,7 @@ public final class SmbBufferedDataSource extends BaseDataSource {
         if (needStart >= windowStart && needEnd <= windowEnd) {
             return; // already covered by the window
         }
-        if (needStart < windowStart || (needEnd - windowStart) > WINDOW_SIZE) {
+        if (needStart < windowStart || (needEnd - windowStart) > windowSize) {
             // backward seek, or the request cannot fit contiguously -> reset the window
             windowStart = needStart;
             windowEnd = needStart;
@@ -187,7 +192,7 @@ public final class SmbBufferedDataSource extends BaseDataSource {
                 windowEnd = needStart + tail;
             }
         }
-        long target = Math.min(fileLength, windowStart + WINDOW_SIZE);
+        long target = Math.min(fileLength, windowStart + windowSize);
         while (windowEnd < target) {
             int toRead = (int) Math.min(READ_CHUNK, target - windowEnd);
             int n = smbFile.read(window, windowEnd, (int) (windowEnd - windowStart), toRead);
@@ -196,7 +201,7 @@ public final class SmbBufferedDataSource extends BaseDataSource {
             }
             windowEnd += n;
         }
-        sWindowFill = (float) (windowEnd - windowStart) / WINDOW_SIZE;
+        sWindowFill = (float) (windowEnd - windowStart) / windowSize;
     }
 
     @Nullable
@@ -222,7 +227,7 @@ public final class SmbBufferedDataSource extends BaseDataSource {
     private void record(int n) {
         sTotalBytes += n;
         sWindowFill = bytesRemaining > 0 || windowEnd > windowStart
-                ? (float) (windowEnd - windowStart) / WINDOW_SIZE : 0f;
+                ? (float) (windowEnd - windowStart) / windowSize : 0f;
     }
 
     /** Current SMB read throughput in bytes/second, sampled since the previous call. */
