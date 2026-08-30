@@ -118,7 +118,12 @@ public class SiteApi {
         if (site.isEmpty() && PUSH.equals(key)) {
             Vod vod = new Vod();
             vod.setId(id);
-            vod.setName(id);
+            // NB: do NOT set the name to the playlist string (id). For a multi-episode push the
+            // id is "name$url#name$url#...", so naming the Vod after it makes the on-screen
+            // (marquee) title show the whole playlist — which visibly begins with the first
+            // file's name and never updates when auto-advancing to later episodes. Leaving the
+            // name empty lets setDetail() fill it from the caller-supplied name (e.g. the SMB
+            // folder path), and the per-episode title is set separately in getPlayer().
             vod.setPlayUrl(id);
             vod.setPlayFrom(ResUtil.getString(R.string.push));
             vod.setPic(ResUtil.getString(R.string.push_image));

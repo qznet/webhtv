@@ -297,29 +297,43 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
         return (currentShare.isEmpty() ? "/" : currentShare) + (currentPath.isEmpty() ? "" : "/" + currentPath);
     }
 
-    /** History rows are keyed by {@code siteKey@@@id@@@cid}; for pushed urls the id is the url. */
-    private static String historyKey(String url) {
-        return SiteApi.PUSH + AppDatabase.SYMBOL + url + AppDatabase.SYMBOL + VodConfig.getCid();
+    /**
+     * All PUSH (SMB) history rows for the current cid. A folder play saves one history row per
+     * {@code playFrom} session, keyed by the whole playlist string, but the actually-played file's
+     * loopback proxy url is stored in {@code episodeUrl}. We match on that url, which is stable
+     * across restarts, so a watched file is detected no matter where its playlist started.
+     */
+    private List<History> pushHistories() {
+        try {
+            List<History> all = History.get(VodConfig.getCid());
+            List<History> push = new ArrayList<>();
+            String prefix = SiteApi.PUSH + AppDatabase.SYMBOL;
+            for (History h : all) if (h.getKey() != null && h.getKey().startsWith(prefix)) push.add(h);
+            return push;
+        } catch (Throwable e) {
+            return new ArrayList<>();
+        }
     }
 
     /** Look up the playback history of one file (null when it has never been played). */
-    private History historyOf(SmbFile item) {
+    private History historyOf(SmbFile item, List<History> push) {
         if (servers.isEmpty()) return null;
         try {
             String url = SmbHttpProxy.get().proxyUrl(servers.get(selectedIndex).getFileUrl(currentShare, item.getPath()));
-            return History.find(historyKey(url));
-        } catch (Throwable e) {
-            return null;
+            for (History h : push) if (url.equals(h.getEpisodeUrl())) return h;
+        } catch (Throwable ignored) {
         }
+        return null;
     }
 
     /** Marks every already-played file so the list can dim it. Runs off the main thread (Room). */
     private void refreshWatched(List<SmbFile> files) {
+        List<History> push = pushHistories();
         Task.execute(() -> {
             Set<String> seen = new HashSet<>();
             for (SmbFile item : files) {
                 if (item.isDirectory() || !isVideo(item.getName())) continue;
-                if (historyOf(item) != null) seen.add(item.getPath());
+                if (historyOf(item, push) != null) seen.add(item.getPath());
             }
             App.post(() -> {
                 mAdapter.setWatched(seen);
@@ -333,12 +347,13 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
      * continue with the next file instead of replaying it.
      */
     private int lastWatchedIndex(List<SmbFile> videos) {
+        List<History> push = pushHistories();
         int index = -1;
         long newest = Long.MIN_VALUE;
         for (int i = 0; i < videos.size(); i++) {
-            History history = historyOf(videos.get(i));
-            if (history == null || history.getUpdateTime() <= newest) continue;
-            newest = history.getUpdateTime();
+            History history = historyOf(videos.get(i), push);
+            if (history == null || history.getCreateTime() <= newest) continue;
+            newest = history.getCreateTime();
             index = history.isNearEnding() && i + 1 < videos.size() ? i + 1 : i;
         }
         return index;

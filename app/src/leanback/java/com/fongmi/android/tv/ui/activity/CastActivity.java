@@ -491,12 +491,17 @@ public class CastActivity extends PlaybackActivity implements CustomKeyDownVod.L
     }
 
     @Override
-    public void onKeyUp() {
+    public void onSpeedStepUp() {
         showControl();
     }
 
     @Override
-    public void onKeyDown() {
+    public void onSpeedStepDown() {
+        showControl();
+    }
+
+    @Override
+    public void onShowControl() {
         showControl();
     }
 

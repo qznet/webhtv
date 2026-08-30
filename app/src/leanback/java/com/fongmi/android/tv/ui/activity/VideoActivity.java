@@ -6130,21 +6130,27 @@ public class VideoActivity extends PlaybackActivity implements CustomKeyDownVod.
     }
 
     @Override
-    public void onKeyUp() {
-        long position = player().getPosition();
-        long duration = player().getDuration();
-        if (player().canSetOpening(position, duration)) {
-            showControl(mBinding.control.action.opening);
-        } else if (player().canSetEnding(position, duration)) {
-            showControl(mBinding.control.action.ending);
-        } else {
-            showControl(getFocus2());
-        }
+    public void onSpeedStepUp() {
+        stepSpeed(0.1f);
     }
 
     @Override
-    public void onKeyDown() {
+    public void onSpeedStepDown() {
+        stepSpeed(-0.1f);
+    }
+
+    @Override
+    public void onShowControl() {
         showControl(getFocus2());
+    }
+
+    /** Adjust playback speed by ±0.1 while in fullscreen (control bar hidden). */
+    private void stepSpeed(float delta) {
+        float speed = Math.round((player().getSpeed() + delta) * 10f) / 10f;
+        speed = Math.min(5.0f, Math.max(0.25f, speed));
+        mBinding.control.action.speed.setText(player().setSpeed(speed));
+        Notify.show(player().getSpeedText());
+        mHistory.setSpeed(player().getSpeed());
     }
 
     @Override
