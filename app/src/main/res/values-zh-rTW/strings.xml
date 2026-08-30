@@ -1224,6 +1224,7 @@
         <item>網速</item>
         <item>迷你</item>
         <item>播放參數</item>
+        <item>速度/緩衝</item>
     </string-array>
 
     <string-array name="select_track">

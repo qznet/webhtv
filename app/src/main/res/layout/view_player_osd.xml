@@ -142,6 +142,24 @@
 
     </LinearLayout>
 
+    <com.google.android.material.textview.MaterialTextView
+        android:id="@+id/osdSpeedBuffer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="12dp"
+        android:fontFeatureSettings="tnum"
+        android:shadowColor="#CC000000"
+        android:shadowDx="1.5"
+        android:shadowDy="1.5"
+        android:shadowRadius="2"
+        android:textColor="@color/white"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:visibility="gone"
+        tools:text="SMB读取 8.4 MB/s · 窗口 62% · 缓冲 18.2s / 48%"
+        tools:visibility="visible" />
+
     <com.fongmi.android.tv.ui.custom.MiniProgressView
         android:id="@+id/osdMiniProgress"
         android:layout_width="match_parent"

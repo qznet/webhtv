@@ -1248,6 +1248,7 @@
         <item>Network speed</item>
         <item>Mini</item>
         <item>Playback params</item>
+        <item>Speed / Buffer</item>
     </string-array>
 
     <string-array name="select_track">

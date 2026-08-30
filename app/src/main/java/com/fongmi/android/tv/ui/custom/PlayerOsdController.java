@@ -32,6 +32,7 @@ import com.fongmi.android.tv.player.PlayerManager;
 import com.fongmi.android.tv.player.PlaybackPanelResourceMonitor;
 import com.fongmi.android.tv.player.PlaybackDiagnosticsSourcePolicy;
 import com.fongmi.android.tv.player.PlaybackRoute;
+import com.fongmi.android.tv.player.exo.SmbBufferedDataSource;
 import com.fongmi.android.tv.player.engine.PlayerEngine;
 import com.fongmi.android.tv.player.exo.PlaybackAnalyticsListener;
 import com.fongmi.android.tv.setting.PlaybackPerformanceSetting;
@@ -67,6 +68,7 @@ public class PlayerOsdController {
     private final TextView bottomRight;
     private final TextView diagnostics;
     private final TextView diagnosticsExtra;
+    private final TextView speedBuffer;
     private final View diagnosticsPanel;
     private final MiniProgressView miniProgress;
     private final Runnable update;
@@ -97,6 +99,7 @@ public class PlayerOsdController {
         this.bottomLeft = bottomLeft;
         this.diagnostics = diagnostics;
         this.diagnosticsExtra = root.findViewById(R.id.osdDiagnosticsExtra);
+        this.speedBuffer = root.findViewById(R.id.osdSpeedBuffer);
         this.diagnosticsPanel = root.findViewById(R.id.osdDiagnosticsPanel);
         this.topRight = topRight;
         this.topLeft = topLeft;
@@ -179,6 +182,7 @@ public class PlayerOsdController {
         setBottomRight();
         setDiagnosticsPanel(player);
         setMiniProgress(player);
+        setSpeedBuffer(player);
         return true;
     }
 
@@ -286,6 +290,35 @@ public class PlayerOsdController {
         }
         miniProgress.setProgress(player.getPosition(), duration);
         miniProgress.setVisibility(View.VISIBLE);
+    }
+
+    private void setSpeedBuffer(PlayerManager player) {
+        if (controlsVisible || !PlayerSetting.isOsdSpeedBuffer() || player == null) {
+            speedBuffer.setVisibility(View.GONE);
+            return;
+        }
+        String url = player.getUrl();
+        boolean smb = url != null && url.startsWith("smb://");
+        String speed;
+        String extra = "";
+        if (smb) {
+            speed = formatByteSpeed(SmbBufferedDataSource.sampleThroughputBps());
+            int fill = Math.round(SmbBufferedDataSource.getWindowFill() * 100);
+            extra = " · 窗口 " + fill + "%";
+        } else {
+            speed = lastSpeedText;
+        }
+        if (TextUtils.isEmpty(speed)) speed = "—";
+        long bufferedMs = Math.max(0, player.getBufferedDuration());
+        String buffer = bufferedMs <= 0 ? "" : formatDuration(bufferedMs) + (player.getBufferedPercentage() > 0 ? " / " + player.getBufferedPercentage() + "%" : "");
+        String text = (smb ? "SMB读取 " : "网速 ") + speed + extra + (TextUtils.isEmpty(buffer) ? "" : " · 缓冲 " + buffer);
+        if (TextUtils.isEmpty(text)) {
+            speedBuffer.setVisibility(View.GONE);
+            return;
+        }
+        speedBuffer.setText(text);
+        speedBuffer.setTextSize(TypedValue.COMPLEX_UNIT_SP, miniSp);
+        speedBuffer.setVisibility(View.VISIBLE);
     }
 
     private void setTextSize(float sp) {

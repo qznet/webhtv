@@ -572,7 +572,15 @@ public class PlayerSetting {
         Prefers.put("player_osd_diagnostics", value);
     }
 
+    public static boolean isOsdSpeedBuffer() {
+        return Prefers.getBoolean("player_osd_speed_buffer");
+    }
+
+    public static void putOsdSpeedBuffer(boolean value) {
+        Prefers.put("player_osd_speed_buffer", value);
+    }
+
     public static boolean isOsdEnabled() {
-        return isOsdTitle() || isOsdResolution() || isOsdTime() || isOsdProgress() || isOsdTraffic() || isOsdMini() || isOsdDiagnostics();
+        return isOsdTitle() || isOsdResolution() || isOsdTime() || isOsdProgress() || isOsdTraffic() || isOsdMini() || isOsdDiagnostics() || isOsdSpeedBuffer();
     }
 }

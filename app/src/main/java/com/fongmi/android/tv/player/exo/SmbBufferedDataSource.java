@@ -43,6 +43,13 @@ public final class SmbBufferedDataSource extends BaseDataSource {
     private static final int WINDOW_SIZE = 2 * 1024 * 1024;   // 2 MB read-ahead window
     private static final int READ_CHUNK = 256 * 1024;        // max bytes per single SMB READ
 
+    // Live debug statistics, published to a singleton so the OSD can sample throughput
+    // and read-ahead window occupancy without holding a reference to the active source.
+    private static volatile long sTotalBytes;
+    private static volatile long sLastSampleBytes;
+    private static volatile long sLastSampleTs;
+    private static volatile float sWindowFill;               // 0..1, read-ahead window occupancy
+
     private final byte[] window = new byte[WINDOW_SIZE];
     private long windowStart;   // file offset of window[0]
     private long windowEnd;     // file offset just past the last valid byte in the window
@@ -84,6 +91,7 @@ public final class SmbBufferedDataSource extends BaseDataSource {
     @Override
     public long open(DataSpec dataSpec) throws IOException {
         uri = dataSpec.uri;
+        resetStats();
         transferInitializing(dataSpec);
         String host = uri.getHost();
         if (host == null) {
@@ -157,6 +165,7 @@ public final class SmbBufferedDataSource extends BaseDataSource {
         readPosition += toCopy;
         bytesRemaining -= toCopy;
         bytesTransferred(toCopy);
+        record(toCopy);
         return toCopy;
     }
 
@@ -187,6 +196,7 @@ public final class SmbBufferedDataSource extends BaseDataSource {
             }
             windowEnd += n;
         }
+        sWindowFill = (float) (windowEnd - windowStart) / WINDOW_SIZE;
     }
 
     @Nullable
@@ -203,6 +213,43 @@ public final class SmbBufferedDataSource extends BaseDataSource {
         }
         uri = null;
         closeSmb();
+    }
+
+    /**
+     * Records a successful transfer of {@code n} bytes for the live throughput estimate, and
+     * refreshes the read-ahead window occupancy.
+     */
+    private void record(int n) {
+        sTotalBytes += n;
+        sWindowFill = bytesRemaining > 0 || windowEnd > windowStart
+                ? (float) (windowEnd - windowStart) / WINDOW_SIZE : 0f;
+    }
+
+    /** Current SMB read throughput in bytes/second, sampled since the previous call. */
+    public static long sampleThroughputBps() {
+        long now = System.currentTimeMillis();
+        long lastBytes = sLastSampleBytes;
+        long lastTs = sLastSampleTs;
+        sLastSampleBytes = sTotalBytes;
+        sLastSampleTs = now;
+        if (lastTs <= 0) return 0;
+        long dt = now - lastTs;
+        if (dt <= 0) return 0;
+        long bytes = sTotalBytes - lastBytes;
+        return bytes * 1000 / dt;
+    }
+
+    /** Read-ahead window occupancy in the range 0..1. */
+    public static float getWindowFill() {
+        return Math.max(0f, Math.min(1f, sWindowFill));
+    }
+
+    /** Resets the live debug counters (call when a new file is opened or the source is closed). */
+    public static void resetStats() {
+        sTotalBytes = 0;
+        sLastSampleBytes = 0;
+        sLastSampleTs = 0;
+        sWindowFill = 0f;
     }
 
     private void closeSmb() {

@@ -1240,6 +1240,7 @@
         <item>网速</item>
         <item>迷你</item>
         <item>播放参数</item>
+        <item>速度/缓冲</item>
     </string-array>
 
     <string-array name="select_track">
