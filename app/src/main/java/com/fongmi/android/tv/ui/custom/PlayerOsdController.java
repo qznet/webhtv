@@ -33,6 +33,7 @@ import com.fongmi.android.tv.player.PlaybackPanelResourceMonitor;
 import com.fongmi.android.tv.player.PlaybackDiagnosticsSourcePolicy;
 import com.fongmi.android.tv.player.PlaybackRoute;
 import com.fongmi.android.tv.player.exo.SmbBufferedDataSource;
+import com.fongmi.android.tv.smb.SmbHttpProxy;
 import com.fongmi.android.tv.player.engine.PlayerEngine;
 import com.fongmi.android.tv.player.exo.PlaybackAnalyticsListener;
 import com.fongmi.android.tv.setting.PlaybackPerformanceSetting;
@@ -298,13 +299,18 @@ public class PlayerOsdController {
             return;
         }
         String url = player.getUrl();
-        boolean smb = url != null && url.startsWith("smb://");
+        boolean smb = url != null && (url.startsWith("smb://") || url.contains("/smb/"));
         String speed;
         String extra = "";
         if (smb) {
-            speed = formatByteSpeed(SmbBufferedDataSource.sampleThroughputBps());
-            int fill = Math.round(SmbBufferedDataSource.getWindowFill() * 100);
-            extra = " · 窗口 " + fill + "%";
+            long bps = url.contains("/smb/")
+                    ? SmbHttpProxy.get().sampleThroughputBps(url)
+                    : SmbBufferedDataSource.sampleThroughputBps();
+            speed = formatByteSpeed(bps);
+            if (!url.contains("/smb/")) {
+                int fill = Math.round(SmbBufferedDataSource.getWindowFill() * 100);
+                extra = " · 窗口 " + fill + "%";
+            }
         } else {
             speed = lastSpeedText;
         }

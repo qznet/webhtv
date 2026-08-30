@@ -14,6 +14,7 @@ import com.fongmi.android.tv.R;
 import com.fongmi.android.tv.databinding.ActivitySmbBinding;
 import com.fongmi.android.tv.smb.SmbClient;
 import com.fongmi.android.tv.smb.SmbFile;
+import com.fongmi.android.tv.smb.SmbHttpProxy;
 import com.fongmi.android.tv.smb.SmbServer;
 import com.fongmi.android.tv.smb.SmbStore;
 import com.fongmi.android.tv.ui.adapter.SmbAdapter;
@@ -172,6 +173,13 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
         }
         SmbServer s = servers.get(selectedIndex);
         String url = s.getFileUrl(currentShare, item.getPath());
+        // Route through the local loopback HTTP proxy so both the mpv and exo kernels
+        // read SMB over plain HTTP (mpv cannot read smb:// directly on Android TV).
+        try {
+            url = SmbHttpProxy.get().proxyUrl(url);
+        } catch (Throwable ignored) {
+            // Fall back to the raw smb:// URL (exo's smbj data source) if the proxy is down.
+        }
         VideoActivity.start(this, url);
     }
 
