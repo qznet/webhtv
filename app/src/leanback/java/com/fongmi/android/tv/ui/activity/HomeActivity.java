@@ -468,6 +468,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         items.add(Func.create(R.string.home_search));
         items.add(Func.create(R.string.home_keep));
         items.add(Func.create(R.string.home_open));
+        items.add(Func.create(R.string.home_smb));
         items.add(Func.create(R.string.home_push));
         items.add(Func.create(R.string.home_setting));
         mFuncAdapter.setItems(items, new BaseDiffCallback<Func>());
@@ -596,6 +597,7 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
         else if (item.getResId() == R.string.home_search) SearchActivity.start(this);
         else if (item.getResId() == R.string.home_setting) SettingActivity.start(this);
         else if (item.getResId() == R.string.home_open) LinkDialog.show(this);
+        else if (item.getResId() == R.string.home_smb) SmbActivity.start(this);
     }
 
     @Override

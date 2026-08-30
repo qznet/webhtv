@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <EditText
+            android:id="@+id/name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/smb_server_name"
+            android:inputType="text"
+            android:importantForAutofill="no"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/host"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/smb_host"
+            android:inputType="textUri"
+            android:importantForAutofill="no"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/port"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/smb_port"
+            android:inputType="number"
+            android:importantForAutofill="no"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/share"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/smb_share_name"
+            android:inputType="text"
+            android:importantForAutofill="no"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/user"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/smb_username"
+            android:inputType="text"
+            android:importantForAutofill="no"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/pass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/smb_password"
+            android:inputType="textPassword"
+            android:importantForAutofill="no"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/domain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/smb_domain"
+            android:inputType="text"
+            android:importantForAutofill="no" />
+    </LinearLayout>
+</ScrollView>
