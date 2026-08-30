@@ -68,12 +68,17 @@ jobs:
 
       - name: Install Android packages
         run: |
-          sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;37.0.0" "ndk;27.0.12077973"
+          # 从 app/build.gradle 读取 android.ndkVersion，避免与 upstream 的 NDK 版本漂移导致 [CXX1104] 冲突
+          NDK_VER="$(sed -n 's/.*ndkVersion[^"]*"\([0-9.]*\)".*/\1/p' app/build.gradle | head -1)"
+          if [ -z "$NDK_VER" ]; then NDK_VER="27.0.12077973"; fi
+          echo "NDK_VER=$NDK_VER" >> "$GITHUB_ENV"
+          echo "Resolved NDK version: $NDK_VER"
+          sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;37.0.0" "ndk;$NDK_VER"
 
       - name: Generate local.properties placeholder
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-          echo "ndk.dir=$ANDROID_HOME/ndk/27.0.12077973" >> local.properties
+          echo "ndk.dir=$ANDROID_HOME/ndk/${NDK_VER}" >> local.properties
           echo "storeFile=keystore.jks" >> local.properties
           echo "keyAlias=android" >> local.properties
           echo "storePassword=android" >> local.properties
