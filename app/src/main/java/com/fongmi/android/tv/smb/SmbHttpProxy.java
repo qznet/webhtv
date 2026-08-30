@@ -29,6 +29,8 @@ import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -62,9 +64,18 @@ public class SmbHttpProxy extends NanoHTTPD {
     private static final int READ_BLOCK = 1024 * 1024;   // bytes per single SMB READ (1 MiB)
     private static final int MAX_WINDOW = 8 * 1024 * 1024;
     private static final int MAX_SESSIONS = 5000;
+    /** How long serve() waits for the (background) SMB open to finish before giving up. */
+    private static final long OPEN_TIMEOUT_MS = 40_000;
     private static final char[] HEX = "0123456789abcdef".toCharArray();
 
     private static volatile SmbHttpProxy instance;
+
+    /** Bounded pool that performs the slow SMB connect+open off the HTTP-serve thread. */
+    private static final ExecutorService opener = Executors.newFixedThreadPool(2, r -> {
+        Thread t = new Thread(r, "smb-proxy-opener");
+        t.setDaemon(true);
+        return t;
+    });
 
     private final ConcurrentHashMap<String, SmbSession> sessions = new ConcurrentHashMap<>();
     private final Object startLock = new Object();
@@ -88,6 +99,19 @@ public class SmbHttpProxy extends NanoHTTPD {
      * resume-from-last-position.
      */
     public synchronized String proxyUrl(String smbUrl) throws IOException {
+        ensureStarted();
+        String id = stableId(smbUrl);
+        SmbSession session = sessions.computeIfAbsent(id, key -> new SmbSession(key, smbUrl));
+        // Warm the SMB connection now, while the player is still starting up, so the first
+        // HTTP serve() does not have to perform the whole SMB handshake synchronously.
+        session.ensureOpenAsync();
+        return baseUrl() + "/smb/" + id;
+    }
+
+    /** Like {@link #proxyUrl} but does NOT kick off a background SMB connect. Use for URL
+     *  matching (history) and for every playlist entry after the first, to avoid spawning one
+     *  background connection per file. The SMB open then happens lazily when the player requests it. */
+    public synchronized String proxyUrlLazy(String smbUrl) throws IOException {
         ensureStarted();
         String id = stableId(smbUrl);
         sessions.computeIfAbsent(id, key -> new SmbSession(key, smbUrl));
@@ -322,6 +346,12 @@ public class SmbHttpProxy extends NanoHTTPD {
         private long size = -1;
         private volatile long lastAccess = System.currentTimeMillis();
 
+        private final Object openLock = new Object();
+        private volatile boolean opened;
+        private boolean opening;
+        private volatile String openError;
+        private volatile CountDownLatch readyLatch = new CountDownLatch(1);
+
         private final AtomicLong bytesServed = new AtomicLong();
         private long lastSampleBytes;
         private long lastSampleNs = System.nanoTime();
@@ -348,9 +378,52 @@ public class SmbHttpProxy extends NanoHTTPD {
             return lastAccess;
         }
 
-        synchronized void open() throws IOException {
+        /** Start the (slow) SMB connect+open in the background if it has not begun yet. Idempotent. */
+        void ensureOpenAsync() {
+            synchronized (openLock) {
+                if (opened || opening) return;
+                opening = true;
+                opener.submit(() -> {
+                    try {
+                        doOpen();
+                        opened = true;
+                    } catch (Throwable e) {
+                        openError = e.getMessage() == null ? e.toString() : e.getMessage();
+                    } finally {
+                        readyLatch.countDown();
+                    }
+                });
+            }
+        }
+
+        /**
+         * Open the SMB file, waiting for any in-flight background open.
+         *
+         * <p>Previously the whole SMB handshake (TCP connect, negotiate, authenticate, tree-connect,
+         * open file, query size) ran <b>synchronously</b> inside the first {@code serve()} call. On a
+         * high-latency NAS that handshakes in 1–3 s, which can exceed the player's URL-open timeout and
+         * surface as "media parse failed" (mpv) or a transient "proxy error" (exo) on the very first
+         * file — exactly the "first level fails, later ones work" symptom. The connect is now kicked
+         * off in {@link #ensureOpenAsync()} (typically from {@code proxyUrl}, before the player even
+         * launches) and this method just waits for it.
+         */
+        void open() throws IOException {
             lastAccess = System.currentTimeMillis();
-            if (file != null) return;
+            ensureOpenAsync();
+            try {
+                if (!readyLatch.await(OPEN_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                    throw new IOException("smb open timed out");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("smb open interrupted");
+            }
+            if (!opened) {
+                throw new IOException("smb: " + (openError == null ? "open failed" : openError));
+            }
+        }
+
+        private void doOpen() throws IOException {
             SmbConfig config = SmbConfig.builder()
                     .withTimeout(30, TimeUnit.SECONDS)
                     .withSoTimeout(30, TimeUnit.SECONDS)
@@ -405,6 +478,10 @@ public class SmbHttpProxy extends NanoHTTPD {
             session = null;
             conn = null;
             client = null;
+            opened = false;
+            opening = false;
+            openError = null;
+            readyLatch = new CountDownLatch(1);
         }
 
         private void safeClose(java.io.Closeable c) {

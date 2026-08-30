@@ -148,10 +148,15 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
     private void startPlaylist(List<SmbFile> videos) {
         SmbServer s = servers.get(selectedIndex);
         StringBuilder sb = new StringBuilder();
-        for (SmbFile v : videos) {
+        for (int i = 0; i < videos.size(); i++) {
+            SmbFile v = videos.get(i);
             String url = s.getFileUrl(currentShare, v.getPath());
             try {
-                url = SmbHttpProxy.get().proxyUrl(url);
+                // Warm only the first file's SMB connection ahead of playback; the rest open
+                // lazily when the player reaches them (avoids one background connect per file).
+                url = (i == 0)
+                        ? SmbHttpProxy.get().proxyUrl(url)
+                        : SmbHttpProxy.get().proxyUrlLazy(url);
             } catch (Throwable ignored) {
                 // Fall back to the raw smb:// URL (exo's smbj data source) if the proxy is down.
             }
@@ -319,7 +324,7 @@ public class SmbActivity extends BaseActivity implements SmbAdapter.OnClickListe
     private History historyOf(SmbFile item, List<History> push) {
         if (servers.isEmpty()) return null;
         try {
-            String url = SmbHttpProxy.get().proxyUrl(servers.get(selectedIndex).getFileUrl(currentShare, item.getPath()));
+            String url = SmbHttpProxy.get().proxyUrlLazy(servers.get(selectedIndex).getFileUrl(currentShare, item.getPath()));
             for (History h : push) if (url.equals(h.getEpisodeUrl())) return h;
         } catch (Throwable ignored) {
         }
