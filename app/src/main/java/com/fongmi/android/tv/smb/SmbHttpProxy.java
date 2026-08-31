@@ -28,13 +28,18 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.Map;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicIntegerArray;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 
 import fi.iki.elonen.NanoHTTPD;
 import fi.iki.elonen.NanoHTTPD.IHTTPSession;
@@ -300,41 +305,119 @@ public class SmbHttpProxy extends NanoHTTPD {
     }
 
     /**
-     * Streams {@code [start, start+length)} from an opened SMB file through a read-ahead window.
+     * Streams {@code [start, start+length)} from an opened SMB file, feeding the HTTP layer from a
+     * ring buffer that is filled by several background readers issuing SMB reads <b>in parallel</b>.
      *
-     * <p>The HTTP layer pulls this stream in small (a few KB) chunks; issuing a separate SMB READ
-     * per small chunk means one network round-trip per few KB, which collapses to ~5 MB/s on a
-     * high-latency NAS. Instead we pull large blocks from SMB into a window and serve the small
-     * HTTP reads out of memory — the same read-ahead idea external SMB file managers use.
+     * <p>Single-threaded SMB reads cap throughput at ~one READ per round-trip (≈10 MB/s on a typical
+     * NAS) no matter how large the block — exactly the ceiling users hit versus CX File Explorer
+     * (~18 MB/s), which keeps several reads in flight over a warm connection. We open several SMB
+     * file handles on the shared connection and let them read ahead concurrently into a ring, so the
+     * HTTP consumer never stalls on a single round-trip and throughput approaches the link's real
+     * capacity. If parallel setup fails for any reason we transparently fall back to a single
+     * sequential stream, so playback can never get worse than before.
      */
     private static final class SmbRangeStream extends InputStream {
         private final SmbSession session;
-        private final long end;
-        private final byte[] window;
-        private long pos;
-        private long winStart;
-        private int winLen;
+        private final long absStart;
+        private final long absEnd;          // exclusive
+        private final boolean parallel;
 
-        SmbRangeStream(SmbSession session, long start, long length) {
+        private static final int SEG = 1024 * 1024;            // 1 MB per ring segment
+        private static final int NSEG = 24;                     // 24 MB ring
+        private static final int PREFETCH = 4;                 // concurrent SMB readers
+
+        private final byte[] ring = new byte[SEG * NSEG];
+        private final AtomicIntegerArray segState = new AtomicIntegerArray(NSEG); // 0 unread,1 reading,2 done,3 error
+        private final AtomicIntegerArray segLen = new AtomicIntegerArray(NSEG);    // valid bytes in a done segment
+        private final AtomicLong nextSeg = new AtomicLong(0);    // next absolute segment to fetch
+        private volatile long consumerSeg = 0;                  // current consumer absolute segment
+        private long pos;                                       // current absolute read offset
+        private final ReentrantLock lock = new ReentrantLock();
+        private final Condition notFull = lock.newCondition();
+        private final Condition segReady = lock.newCondition();
+        private final List<File> handles = new ArrayList<>();
+        private final ExecutorService pool;
+        private volatile boolean closed;
+
+        SmbRangeStream(SmbSession session, long start, long length) throws IOException {
             this.session = session;
+            this.absStart = start;
+            this.absEnd = start + length;
             this.pos = start;
-            this.end = start + length;
-            long desired = Math.min(PlayerSetting.getSmbWindowBytes(), MAX_WINDOW);
-            // Allocate the user-selected window size (capped at remaining length). Do not force
-            // it up to READ_BLOCK — that would silently inflate memory on small-window settings.
-            long winSize = Math.min(desired, length);
-            this.window = new byte[(int) Math.max(1, winSize)];
+            this.consumerSeg = start / SEG;
+            this.parallel = tryInitParallel();
+            this.pool = parallel ? buildPool() : null;
+            if (parallel) for (int i = 0; i < PREFETCH; i++) pool.submit(new Prefetch(i));
         }
 
-        private void fill() throws IOException {
-            winStart = pos;
-            winLen = 0;
-            long want = Math.min(window.length, end - pos);
-            while (winLen < want) {
-                int need = (int) Math.min(READ_BLOCK, want - winLen);
-                int n = session.readRaw(winStart + winLen, window, winLen, need);
-                if (n <= 0) break;
-                winLen += n;
+        private boolean tryInitParallel() {
+            try {
+                for (int i = 0; i < PREFETCH; i++) handles.add(session.openParallel(i));
+                nextSeg.set(absStart / SEG);
+                return true;
+            } catch (IOException | RuntimeException e) {
+                for (File f : handles) safeClose(f);
+                handles.clear();
+                return false;
+            }
+        }
+
+        private ExecutorService buildPool() {
+            return Executors.newFixedThreadPool(PREFETCH, new ThreadFactory() {
+                private int c;
+                @Override public Thread newThread(Runnable r) {
+                    Thread t = new Thread(r, "smb-pre-" + (c++));
+                    t.setDaemon(true);
+                    return t;
+                }
+            });
+        }
+
+        private final class Prefetch implements Runnable {
+            private final int idx;
+            Prefetch(int i) { this.idx = i; }
+            @Override public void run() {
+                File h = handles.get(idx);
+                while (!closed) {
+                    long g;
+                    lock.lock();
+                    try {
+                        g = nextSeg.get();
+                        if (g * SEG >= absEnd) break;
+                        if (g - consumerSeg >= NSEG) {
+                            try { notFull.await(150, TimeUnit.MILLISECONDS); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                            continue;
+                        }
+                        g = nextSeg.getAndIncrement();
+                        if (g * SEG >= absEnd) break;
+                        segState.set((int) (g % NSEG), 1);
+                    } finally {
+                        lock.unlock();
+                    }
+                    int got;
+                    try {
+                        int len = (int) Math.min(SEG, absEnd - g * SEG);
+                        got = h.read(ring, g * SEG, (int) (g % NSEG) * SEG, len);
+                    } catch (Exception e) {
+                        got = -1;
+                    }
+                    lock.lock();
+                    try {
+                        int slot = (int) (g % NSEG);
+                        if (got <= 0) {
+                            segState.set(slot, 3);
+                            segReady.signalAll();
+                            break;
+                        }
+                        segLen.set(slot, got);
+                        segState.set(slot, 2);
+                        session.recordServed(got);
+                        segReady.signalAll();
+                        notFull.signalAll();
+                    } finally {
+                        lock.unlock();
+                    }
+                }
             }
         }
 
@@ -347,14 +430,52 @@ public class SmbHttpProxy extends NanoHTTPD {
 
         @Override
         public int read(byte[] b, int off, int len) throws IOException {
-            if (pos >= end) return -1;
-            if (pos < winStart || pos >= winStart + winLen) fill();
-            if (winLen == 0) return -1;
-            int inWin = (int) (pos - winStart);
-            int n = (int) Math.min(len, Math.min(winLen - inWin, end - pos));
-            System.arraycopy(window, inWin, b, off, n);
-            pos += n;
-            return n;
+            if (len == 0) return 0;
+            if (pos >= absEnd) return -1;
+            if (parallel) {
+                lock.lock();
+                try {
+                    while (true) {
+                        long c = pos / SEG;
+                        int slot = (int) (c % NSEG);
+                        int st = segState.get(slot);
+                        if (st == 2) {
+                            int inSeg = (int) (pos - c * SEG);
+                            int valid = segLen.get(slot);
+                            int avail = (int) Math.min((long) len, Math.min((long) valid - inSeg, absEnd - pos));
+                            if (avail <= 0) { pos = (c + 1) * SEG; continue; }
+                            System.arraycopy(ring, slot * SEG + inSeg, b, off, avail);
+                            pos += avail;
+                            long nc = pos / SEG;
+                            if (nc > consumerSeg) { consumerSeg = nc; notFull.signalAll(); }
+                            return avail;
+                        } else if (st == 3) {
+                            break; // a prefetch error occurred -> fall through to sequential fallback
+                        } else {
+                            try { segReady.await(300, TimeUnit.MILLISECONDS); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); return -1; }
+                            if (pos >= absEnd) return -1;
+                        }
+                    }
+                } finally {
+                    lock.unlock();
+                }
+            }
+            // Sequential fallback (parallel disabled or a prefetch error occurred).
+            int avail = (int) Math.min((long) len, absEnd - pos);
+            if (avail <= 0) return -1;
+            int got = session.readRaw(pos, b, off, avail);
+            if (got <= 0) return -1;
+            pos += got;
+            return got;
+        }
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            lock.lock();
+            try { segReady.signalAll(); notFull.signalAll(); } finally { lock.unlock(); }
+            if (pool != null) pool.shutdownNow();
+            super.close();
         }
     }
 
@@ -477,6 +598,7 @@ public class SmbHttpProxy extends NanoHTTPD {
         private volatile CountDownLatch readyLatch = new CountDownLatch(1);
 
         private final AtomicLong bytesServed = new AtomicLong();
+        private final List<File> parallelFiles = new ArrayList<>();
         private long lastSampleBytes;
         private long lastSampleNs = System.nanoTime();
 
@@ -583,6 +705,21 @@ public class SmbHttpProxy extends NanoHTTPD {
             return n;
         }
 
+        /** Open a fresh parallel SMB file handle for concurrent prefetch reads.
+         *  Each caller (each {@link SmbRangeStream}) opens its own set so concurrent prefetchers
+         *  never share a single smbj {@code File} (its reads are not thread-safe). All handles are
+         *  closed together when the session is reaped. */
+        synchronized File openParallel(int i) throws IOException {
+            File f = shareHandle.openFile(filePath);
+            parallelFiles.add(f);
+            return f;
+        }
+
+        /** Record network bytes served (called by the prefetch threads) for the OSD read-out. */
+        void recordServed(long n) {
+            if (n > 0) bytesServed.addAndGet(n);
+        }
+
         long sampleThroughputBps() {
             long now = System.nanoTime();
             long bytes = bytesServed.get();
@@ -594,6 +731,8 @@ public class SmbHttpProxy extends NanoHTTPD {
         }
 
         synchronized void close() {
+            for (File pf : parallelFiles) safeClose(pf);
+            parallelFiles.clear();
             safeClose(file);
             file = null;
             if (shareHandle != null) {

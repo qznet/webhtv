@@ -1,6 +1,7 @@
 package com.fongmi.android.tv.ui.activity;
 
 import android.annotation.SuppressLint;
+import android.app.ActivityManager;
 import android.app.SearchManager;
 import android.content.Intent;
 import android.os.Bundle;
@@ -49,6 +50,7 @@ import com.fongmi.android.tv.model.SiteViewModel;
 import com.fongmi.android.tv.player.Source;
 import com.fongmi.android.tv.server.Server;
 import com.fongmi.android.tv.service.DLNARendererService;
+import com.fongmi.android.tv.service.ManageService;
 import com.fongmi.android.tv.service.PlaybackService;
 import com.fongmi.android.tv.setting.Setting;
 import com.fongmi.android.tv.ui.adapter.BaseDiffCallback;
@@ -787,14 +789,34 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     }
 
     private void confirmExitHome() {
-        // Full exit: stop all background services and terminate the process so nothing stays alive.
-        stopService(new Intent(this, PlaybackService.class));
-        stopService(new Intent(this, DLNARendererService.class));
-        Server.get().stop();
-        Source.get().exit();
-        finishAffinity();
-        android.os.Process.killProcess(android.os.Process.myPid());
-        System.exit(0);
+        // Full exit: tear down every background service properly. stopService() is a no-op on a
+        // bound + START_STICKY foreground PlaybackService, so after a hard kill Android just
+        // relaunches it in the background (the "exit never completes" symptom). The proven fix
+        // (mirrors Silent1566/webhtv) is to shut the playback service down (releases the Media3
+        // session, drops foreground, stopSelf), stop the DLNA + manage services, stop the local
+        // server, remove the app task from recents, then hard-kill as a last resort.
+        try {
+            PlaybackService ps = Server.get().getService();
+            if (ps != null) ps.shutdown();
+        } catch (Throwable ignored) {}
+        try { DLNARendererService.stop(this); } catch (Throwable ignored) {}
+        try { ManageService.stop(this); } catch (Throwable ignored) {}
+        try { Server.get().stop(); } catch (Throwable ignored) {}
+        try { Source.get().exit(); } catch (Throwable ignored) {}
+        // Remove the app's task from recents/overview so it does not linger in the background.
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            if (am != null) {
+                for (ActivityManager.AppTask t : am.getAppTasks()) t.finishAndRemoveTask();
+            }
+        } catch (Throwable ignored) {}
+        try { finishAndRemoveTask(); } catch (Throwable ignored) {}
+        // Last-resort hard kill to guarantee the process is gone.
+        final android.os.Handler killer = new android.os.Handler(android.os.Looper.getMainLooper());
+        killer.postDelayed(() -> {
+            android.os.Process.killProcess(android.os.Process.myPid());
+            System.exit(0);
+        }, 500);
     }
 
     @Override
