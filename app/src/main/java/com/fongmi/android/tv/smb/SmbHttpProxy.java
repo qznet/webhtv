@@ -61,7 +61,14 @@ public class SmbHttpProxy extends NanoHTTPD {
     private static final String KEY_PORT = "port";
     private static final int PREFERRED_PORT = 34567;
     private static final long IDLE_TIMEOUT_MS = 90_000;
-    private static final int READ_BLOCK = 1024 * 1024;   // bytes per single SMB READ (1 MiB)
+    /** How long a pooled SMB connection/session/share stays open after last use. */
+    private static final long SHARE_IDLE_TIMEOUT_MS = 60_000;
+    /**
+     * Bytes requested in a single smbj read. Larger requests amortise SMB round-trips on a
+     * high-latency link. The server may return fewer bytes (negotiated max read size), but
+     * asking for more lets us fill the window in fewer round-trips when the server supports it.
+     */
+    private static final int READ_BLOCK = 4 * 1024 * 1024;   // 4 MiB
     private static final int MAX_WINDOW = 8 * 1024 * 1024;
     private static final int MAX_SESSIONS = 5000;
     /** How long serve() waits for the (background) SMB open to finish before giving up. */
@@ -76,6 +83,11 @@ public class SmbHttpProxy extends NanoHTTPD {
         t.setDaemon(true);
         return t;
     });
+
+    /** SMB share connection pool keyed by host/port/share/credentials. Reusing the same
+     *  TCP/SMB connection across files removes repeated handshakes and keeps the congestion
+     *  window warm — the main reason external managers feed this app faster than our own proxy. */
+    private static final ConcurrentHashMap<String, ShareHandle> shares = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, SmbSession> sessions = new ConcurrentHashMap<>();
     private final Object startLock = new Object();
@@ -194,6 +206,11 @@ public class SmbHttpProxy extends NanoHTTPD {
      * Entries are only evicted once the cache grows past {@link #MAX_SESSIONS}.
      */
     private void reap() {
+        reapSessions();
+        reapShares();
+    }
+
+    private void reapSessions() {
         if (sessions.isEmpty()) return;
         long now = System.currentTimeMillis();
         for (SmbSession s : sessions.values()) {
@@ -208,6 +225,19 @@ public class SmbHttpProxy extends NanoHTTPD {
                     sessions.remove(entry.getKey());
                     entry.getValue().close();
                 });
+    }
+
+    /** Close pooled share connections that have not been used recently. Active playback keeps
+     *  the handle touched, so this only reaps truly idle connections. */
+    private void reapShares() {
+        if (shares.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        for (Map.Entry<String, ShareHandle> e : shares.entrySet()) {
+            if (now - e.getValue().lastUsed() > SHARE_IDLE_TIMEOUT_MS) {
+                ShareHandle removed = shares.remove(e.getKey());
+                if (removed != null) removed.close();
+            }
+        }
     }
 
     private String baseUrl() {
@@ -274,8 +304,8 @@ public class SmbHttpProxy extends NanoHTTPD {
      *
      * <p>The HTTP layer pulls this stream in small (a few KB) chunks; issuing a separate SMB READ
      * per small chunk means one network round-trip per few KB, which collapses to ~5 MB/s on a
-     * high-latency NAS. Instead we pull a large block (1 MiB) from SMB into a window and serve the
-     * small HTTP reads out of memory — the same read-ahead idea external SMB file managers use.
+     * high-latency NAS. Instead we pull large blocks from SMB into a window and serve the small
+     * HTTP reads out of memory — the same read-ahead idea external SMB file managers use.
      */
     private static final class SmbRangeStream extends InputStream {
         private final SmbSession session;
@@ -290,8 +320,10 @@ public class SmbHttpProxy extends NanoHTTPD {
             this.pos = start;
             this.end = start + length;
             long desired = Math.min(PlayerSetting.getSmbWindowBytes(), MAX_WINDOW);
-            long fit = Math.min(desired, Math.max(READ_BLOCK, length));
-            this.window = new byte[(int) Math.max(READ_BLOCK, fit)];
+            // Allocate the user-selected window size (capped at remaining length). Do not force
+            // it up to READ_BLOCK — that would silently inflate memory on small-window settings.
+            long winSize = Math.min(desired, length);
+            this.window = new byte[(int) Math.max(1, winSize)];
         }
 
         private void fill() throws IOException {
@@ -326,6 +358,101 @@ public class SmbHttpProxy extends NanoHTTPD {
         }
     }
 
+    /** One SMB share connection (TCP + SMB session + tree connect) that can be reused across files. */
+    private static final class ShareHandle {
+        private final String key;
+        private final String host;
+        private final int port;
+        private final String share;
+        private final String domain;
+        private final String user;
+        private final String pass;
+
+        private SMBClient client;
+        private Connection conn;
+        private Session session;
+        private DiskShare ds;
+        private volatile long lastUsed = System.currentTimeMillis();
+        private volatile boolean opened;
+        private final Object lock = new Object();
+
+        ShareHandle(String key, String host, int port, String share, String domain, String user, String pass) {
+            this.key = key;
+            this.host = host;
+            this.port = port;
+            this.share = share;
+            this.domain = domain;
+            this.user = user;
+            this.pass = pass;
+        }
+
+        long lastUsed() {
+            return lastUsed;
+        }
+
+        void touch() {
+            lastUsed = System.currentTimeMillis();
+        }
+
+        void ensureOpen() throws IOException {
+            synchronized (lock) {
+                if (opened && conn != null && isConnected(conn) && ds != null) {
+                    touch();
+                    return;
+                }
+                close();
+                SmbConfig config = SmbConfig.builder()
+                        .withTimeout(30, TimeUnit.SECONDS)
+                        .withSoTimeout(30, TimeUnit.SECONDS)
+                        .withDfsEnabled(true)
+                        .build();
+                client = new SMBClient(config);
+                conn = client.connect(host, port);
+                AuthenticationContext auth = user.isEmpty()
+                        ? new AuthenticationContext("", new char[0], "")
+                        : new AuthenticationContext(user, pass.toCharArray(), domain);
+                session = conn.authenticate(auth);
+                ds = (DiskShare) session.connectShare(share);
+                opened = true;
+                touch();
+            }
+        }
+
+        private boolean isConnected(Connection c) {
+            try {
+                return c != null && c.isConnected();
+            } catch (Throwable e) {
+                return false;
+            }
+        }
+
+        File openFile(String filePath) throws IOException {
+            synchronized (lock) {
+                touch();
+                return ds.openFile(filePath,
+                        EnumSet.of(AccessMask.GENERIC_READ, AccessMask.FILE_READ_DATA),
+                        EnumSet.noneOf(FileAttributes.class),
+                        EnumSet.of(SMB2ShareAccess.FILE_SHARE_READ),
+                        SMB2CreateDisposition.FILE_OPEN,
+                        EnumSet.noneOf(SMB2CreateOptions.class));
+            }
+        }
+
+        void close() {
+            synchronized (lock) {
+                opened = false;
+                safeClose(ds);
+                safeClose(session);
+                safeClose(conn);
+                safeClose(client);
+                ds = null;
+                session = null;
+                conn = null;
+                client = null;
+            }
+        }
+    }
+
     /** One SMB file playback session: parsed credentials + lazily opened smbj handle. */
     private static final class SmbSession {
         private final String id;
@@ -338,10 +465,7 @@ public class SmbHttpProxy extends NanoHTTPD {
         private final String user;
         private final String pass;
 
-        private SMBClient client;
-        private Connection conn;
-        private Session session;
-        private DiskShare ds;
+        private ShareHandle shareHandle;
         private File file;
         private long size = -1;
         private volatile long lastAccess = System.currentTimeMillis();
@@ -406,6 +530,10 @@ public class SmbHttpProxy extends NanoHTTPD {
          * file — exactly the "first level fails, later ones work" symptom. The connect is now kicked
          * off in {@link #ensureOpenAsync()} (typically from {@code proxyUrl}, before the player even
          * launches) and this method just waits for it.
+         *
+         * <p>A pooled SMB share connection is reused across files, so once the first file has warmed
+         * the share, subsequent opens are essentially instant. If the background open still fails
+         * (transient SMB handshake hiccup), we retry once synchronously before giving up.
          */
         void open() throws IOException {
             lastAccess = System.currentTimeMillis();
@@ -419,29 +547,27 @@ public class SmbHttpProxy extends NanoHTTPD {
                 throw new IOException("smb open interrupted");
             }
             if (!opened) {
-                throw new IOException("smb: " + (openError == null ? "open failed" : openError));
+                // Transient failure: retry once synchronously. With connection pooling the share
+                // may already be warm, so the retry is usually fast.
+                synchronized (openLock) {
+                    if (opened) return;
+                    openError = null;
+                    try {
+                        doOpen();
+                        opened = true;
+                    } catch (IOException e) {
+                        openError = e.getMessage();
+                        throw e;
+                    }
+                }
             }
         }
 
         private void doOpen() throws IOException {
-            SmbConfig config = SmbConfig.builder()
-                    .withTimeout(30, TimeUnit.SECONDS)
-                    .withSoTimeout(30, TimeUnit.SECONDS)
-                    .withDfsEnabled(true)
-                    .build();
-            client = new SMBClient(config);
-            conn = client.connect(host, port);
-            AuthenticationContext auth = user.isEmpty()
-                    ? new AuthenticationContext("", new char[0], "")
-                    : new AuthenticationContext(user, pass.toCharArray(), domain);
-            session = conn.authenticate(auth);
-            ds = (DiskShare) session.connectShare(share);
-            file = ds.openFile(filePath,
-                    EnumSet.of(AccessMask.GENERIC_READ, AccessMask.FILE_READ_DATA),
-                    EnumSet.noneOf(FileAttributes.class),
-                    EnumSet.of(SMB2ShareAccess.FILE_SHARE_READ),
-                    SMB2CreateDisposition.FILE_OPEN,
-                    EnumSet.noneOf(SMB2CreateOptions.class));
+            String shareKey = host + ":" + port + "/" + share + "@" + domain + ";" + user;
+            shareHandle = shares.computeIfAbsent(shareKey, k -> new ShareHandle(k, host, port, share, domain, user, pass));
+            shareHandle.ensureOpen();
+            file = shareHandle.openFile(filePath);
             size = file.getFileInformation(FileStandardInformation.class).getEndOfFile();
         }
 
@@ -469,106 +595,102 @@ public class SmbHttpProxy extends NanoHTTPD {
 
         synchronized void close() {
             safeClose(file);
-            safeClose(ds);
-            safeClose(session);
-            safeClose(conn);
-            safeClose(client);
             file = null;
-            ds = null;
-            session = null;
-            conn = null;
-            client = null;
+            if (shareHandle != null) {
+                shareHandle.touch(); // keep the pooled share alive
+                shareHandle = null;
+            }
             opened = false;
             opening = false;
             openError = null;
             readyLatch = new CountDownLatch(1);
         }
+    }
 
-        private void safeClose(java.io.Closeable c) {
-            if (c == null) return;
-            try {
-                c.close();
-            } catch (Throwable ignored) {
+    private static void safeClose(java.io.Closeable c) {
+        if (c == null) return;
+        try {
+            c.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void safeClose(DiskShare c) {
+        if (c == null) return;
+        try {
+            c.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void safeClose(SMBClient c) {
+        if (c == null) return;
+        try {
+            c.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void safeClose(Connection c) {
+        if (c == null) return;
+        try {
+            c.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void safeClose(Session c) {
+        if (c == null) return;
+        try {
+            c.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Returns {host, port, share, filePath, domain, user, pass}. */
+    private static String[] parse(String url) {
+        String s = url.substring("smb://".length());
+        int slash = s.indexOf('/');
+        String authority = slash >= 0 ? s.substring(0, slash) : s;
+        String pathRemainder = slash >= 0 ? s.substring(slash + 1) : "";
+        int at = authority.indexOf('@');
+        String userinfo = at >= 0 ? authority.substring(0, at) : null;
+        String hostport = at >= 0 ? authority.substring(at + 1) : authority;
+
+        String domain = "";
+        String user = "";
+        String pass = "";
+        if (userinfo != null && !userinfo.isEmpty()) {
+            String ui = userinfo;
+            int semi = ui.indexOf(';');
+            if (semi >= 0) {
+                domain = ui.substring(0, semi);
+                ui = ui.substring(semi + 1);
+            }
+            int colon = ui.indexOf(':');
+            if (colon >= 0) {
+                user = ui.substring(0, colon);
+                pass = ui.substring(colon + 1);
+            } else {
+                user = ui;
             }
         }
 
-        private void safeClose(DiskShare c) {
-            if (c == null) return;
-            try {
-                c.close();
-            } catch (Throwable ignored) {
+        int colon = hostport.indexOf(':');
+        String host = colon >= 0 ? hostport.substring(0, colon) : hostport;
+        int port = colon >= 0 ? Integer.parseInt(hostport.substring(colon + 1)) : 445;
+
+        String share = "";
+        String filePath = "";
+        if (!pathRemainder.isEmpty()) {
+            int s2 = pathRemainder.indexOf('/');
+            if (s2 < 0) {
+                share = pathRemainder;
+            } else {
+                share = pathRemainder.substring(0, s2);
+                filePath = pathRemainder.substring(s2 + 1);
             }
         }
-
-        private void safeClose(SMBClient c) {
-            if (c == null) return;
-            try {
-                c.close();
-            } catch (Throwable ignored) {
-            }
-        }
-
-        private void safeClose(Connection c) {
-            if (c == null) return;
-            try {
-                c.close();
-            } catch (Throwable ignored) {
-            }
-        }
-
-        private void safeClose(Session c) {
-            if (c == null) return;
-            try {
-                c.close();
-            } catch (Throwable ignored) {
-            }
-        }
-
-        /** Returns {host, port, share, filePath, domain, user, pass}. */
-        private static String[] parse(String url) {
-            String s = url.substring("smb://".length());
-            int slash = s.indexOf('/');
-            String authority = slash >= 0 ? s.substring(0, slash) : s;
-            String pathRemainder = slash >= 0 ? s.substring(slash + 1) : "";
-            int at = authority.indexOf('@');
-            String userinfo = at >= 0 ? authority.substring(0, at) : null;
-            String hostport = at >= 0 ? authority.substring(at + 1) : authority;
-
-            String domain = "";
-            String user = "";
-            String pass = "";
-            if (userinfo != null && !userinfo.isEmpty()) {
-                String ui = userinfo;
-                int semi = ui.indexOf(';');
-                if (semi >= 0) {
-                    domain = ui.substring(0, semi);
-                    ui = ui.substring(semi + 1);
-                }
-                int colon = ui.indexOf(':');
-                if (colon >= 0) {
-                    user = ui.substring(0, colon);
-                    pass = ui.substring(colon + 1);
-                } else {
-                    user = ui;
-                }
-            }
-
-            int colon = hostport.indexOf(':');
-            String host = colon >= 0 ? hostport.substring(0, colon) : hostport;
-            int port = colon >= 0 ? Integer.parseInt(hostport.substring(colon + 1)) : 445;
-
-            String share = "";
-            String filePath = "";
-            if (!pathRemainder.isEmpty()) {
-                int s2 = pathRemainder.indexOf('/');
-                if (s2 < 0) {
-                    share = pathRemainder;
-                } else {
-                    share = pathRemainder.substring(0, s2);
-                    filePath = pathRemainder.substring(s2 + 1);
-                }
-            }
-            return new String[]{host, String.valueOf(port), share, filePath, domain, user, pass};
-        }
+        return new String[]{host, String.valueOf(port), share, filePath, domain, user, pass};
     }
 }

@@ -25,7 +25,7 @@
     <string name="keep_add">已加入收藏</string>
     <string name="keep_del">已取消收藏</string>
     <string name="exit_confirm_title">确定退出应用？</string>
-    <string name="exit_confirm_message">当前页面将关闭；如果正在播放，会继续留在后台。</string>
+    <string name="exit_confirm_message">应用将完全退出，后台播放也会停止。</string>
     <string name="exit_confirm_positive">确认退出</string>
 
     <!-- Play -->

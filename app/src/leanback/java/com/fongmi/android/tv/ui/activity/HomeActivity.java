@@ -787,8 +787,14 @@ public class HomeActivity extends BaseActivity implements CustomTitleView.Listen
     }
 
     private void confirmExitHome() {
-        if (PlaybackService.isRunning()) Util.moveToBackground(this);
-        else super.onBackInvoked();
+        // Full exit: stop all background services and terminate the process so nothing stays alive.
+        stopService(new Intent(this, PlaybackService.class));
+        stopService(new Intent(this, DLNARendererService.class));
+        Server.get().stop();
+        Source.get().exit();
+        finishAffinity();
+        android.os.Process.killProcess(android.os.Process.myPid());
+        System.exit(0);
     }
 
     @Override
