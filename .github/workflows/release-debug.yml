@@ -1,0 +1,120 @@
+name: Release Debug APKs
+
+# 手动触发：构建 4 个 debug APK（mobile/leanback × arm64-v8a/armeabi-v7a）并发布 GitHub Release。
+# 用于签名 Secrets 未配置时的“可安装发布”。debug APK 可直接 sideload。
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (blank = v<versionName>-debug-yyyyMMddHHmm)"
+        required: false
+        type: string
+      release_notes:
+        description: "Release notes (\\n for newline)"
+        required: false
+        type: string
+      prerelease:
+        description: "Mark as pre-release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  release:
+    name: Build debug APKs and release
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android packages
+        run: |
+          NDK_VER="$(sed -n 's/.*ndkVersion[^"]*"\([0-9.]*\)".*/\1/p' app/build.gradle | head -1)"
+          if [ -z "$NDK_VER" ]; then NDK_VER="27.0.12077973"; fi
+          echo "NDK_VER=$NDK_VER" >> "$GITHUB_ENV"
+          sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;37.0.0" "ndk;$NDK_VER"
+
+      - name: Verify bundled MPV native assets
+        run: bash scripts/verify_mpv_native_assets.sh --require-elf
+
+      - name: Generate local.properties placeholder
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "ndk.dir=$ANDROID_HOME/ndk/${NDK_VER}" >> local.properties
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Build four debug APKs
+        run: |
+          ./gradlew \
+            :app:assembleMobileArm64_v8aDebug \
+            :app:assembleMobileArmeabi_v7aDebug \
+            :app:assembleLeanbackArm64_v8aDebug \
+            :app:assembleLeanbackArmeabi_v7aDebug \
+            --no-daemon
+
+      - name: Collect artifacts
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          find app/build/outputs/apk -name '*.apk' -exec cp {} dist/ \;
+          ls -lh dist/
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle | head -1)"
+          TAG="${{ inputs.release_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="v${VERSION_NAME}-debug-$(date +%Y%m%d%H%M)"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release notes
+        id: notes
+        env:
+          RAW: ${{ inputs.release_notes }}
+        run: |
+          notes="${RAW:-调试版发布（含上游更新）。}"
+          delimiter=NOTES_EOF
+          echo "notes<<$delimiter" >> "$GITHUB_OUTPUT"
+          echo "$notes" >> "$GITHUB_OUTPUT"
+          echo "$delimiter" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRERELEASE=""
+          if [ "${{ inputs.prerelease }}" = "true" ]; then PRERELEASE="--prerelease"; fi
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            --target main \
+            --title "${{ steps.meta.outputs.tag }}" \
+            --notes "${{ steps.notes.outputs.notes }}" \
+            $PRERELEASE \
+            dist/*.apk
