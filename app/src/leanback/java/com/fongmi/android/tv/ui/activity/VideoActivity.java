@@ -6229,6 +6229,7 @@ public class VideoActivity extends PlaybackActivity implements CustomKeyDownVod.
 
     /** Adjust playback speed by ±0.1 while in fullscreen (control bar hidden). */
     private void stepSpeed(float delta) {
+        if (!player().isPlaying()) return;
         float speed = Math.round((player().getSpeed() + delta) * 10f) / 10f;
         speed = Math.min(5.0f, Math.max(0.25f, speed));
         mBinding.control.action.speed.setText(player().setSpeed(speed));
