@@ -37,7 +37,10 @@ jobs:
           git remote set-url upstream https://github.com/fish2018/webhtv.git
           git fetch upstream --tags
           echo "Upstream tip: $(git rev-parse --short upstream/${{ inputs.upstream_ref }})"
-          git merge -X theirs --no-edit upstream/${{ inputs.upstream_ref }}
+          BEFORE=$(git rev-parse HEAD)
+          git merge -X theirs --no-commit --no-edit upstream/${{ inputs.upstream_ref }} || true
+          git checkout $BEFORE -- .github
+          git commit --no-edit || echo "no new commit"
           echo "HEAD after merge: $(git rev-parse --short HEAD)"
       - name: Push main
         run: git push origin main
