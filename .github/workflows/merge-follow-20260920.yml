@@ -1,0 +1,43 @@
+name: Merge Upstream Follow 2026-09-20
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref to merge"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  merge:
+    name: Merge upstream with -X theirs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Configure git
+        run: |
+          git config user.email "action@webhtv.local"
+          git config user.name "sync-bot"
+      - name: Merge upstream
+        run: |
+          git remote add upstream https://github.com/fish2018/webhtv.git || true
+          git remote set-url upstream https://github.com/fish2018/webhtv.git
+          git fetch upstream --tags
+          echo "Upstream tip: $(git rev-parse --short upstream/${{ inputs.upstream_ref }})"
+          git merge -X theirs --no-edit upstream/${{ inputs.upstream_ref }}
+          echo "HEAD after merge: $(git rev-parse --short HEAD)"
+      - name: Push main
+        run: git push origin main
